@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CleanPC Master - Tối Ưu & Dọn Dẹp Máy Tính Toàn Diện</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="shortcut icon" href="favicon.ico">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=7">
+</head>
+<body>
+
+  <!-- Top App Header -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-icon">
+        <img src="logo.png" alt="CleanPC Master Logo" class="brand-logo-img">
+      </div>
+      <div class="brand-text">
+        <h1>CleanPC Master</h1>
+        <span>Hệ Thống Tối Ưu Hóa & Dọn Dẹp Windows</span>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <div id="admin-badge" class="badge badge-user">
+        <span class="pulse-dot"></span>
+        <span id="admin-badge-text">Đang tải...</span>
+      </div>
+      <button id="btn-restart-admin" class="btn btn-sm btn-outline" style="display: none;" title="Khởi động lại với quyền Admin để mở khóa tối ưu TRIM">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+        Nâng quyền Admin
+      </button>
+      <button id="btn-exit-app" class="btn btn-sm btn-outline" title="Thoát hoàn toàn CleanPC Master">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 11-12.73 0M12 2v10"/></svg>
+        Thoát
+      </button>
+    </div>
+  </header>
+
+  <!-- App Layout -->
+  <div class="app-layout">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+      <div class="nav-item active" data-tab="tab-dashboard" title="Tổng quan & Dọn nhanh">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+        <span class="nav-label">Tổng quan & Dọn nhanh</span>
+      </div>
+      <div class="nav-item" data-tab="tab-memory" title="Quản Lý & Dọn RAM">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 19v2M10 19v2M14 19v2M18 19v2M6 3v2M10 3v2M14 3v2M18 3v2M4 7h16a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V9a2 2 0 012-2zM9 11v2M15 11v2"/></svg>
+        <span class="nav-label">Quản Lý & Dọn RAM</span>
+      </div>
+      <div class="nav-item" data-tab="tab-junk" title="Dọn Rác Chi Tiết">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6"/></svg>
+        <span class="nav-label">Dọn Rác Chi Tiết</span>
+      </div>
+      <div class="nav-item" data-tab="tab-duplicates" title="Tìm Tệp Trùng Lặp">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        <span class="nav-label">Tìm Tệp Trùng Lặp</span>
+      </div>
+      <div class="nav-item" data-tab="tab-large-files" title="Tệp Dung Lượng Lớn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+        <span class="nav-label">Tệp Dung Lượng Lớn</span>
+      </div>
+      <div class="nav-item" data-tab="tab-optimizer" title="Sức Khỏe & Tối Ưu Ổ Cứng">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        <span class="nav-label">Sức Khỏe & Tối Ưu Ổ Cứng</span>
+      </div>
+
+      <div class="sidebar-spacer"></div>
+
+      <div class="sidebar-footer">
+        <div style="font-size: 0.78rem; color: var(--text-dim); text-align: center;">
+          CleanPC Master v1.0 Pro<br>Thiết kế cho Windows 11 & 10
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="content-area">
+
+      <!-- ===================================================================
+           TAB 1: TỔNG QUAN & DỌN NHANH (DASHBOARD)
+           =================================================================== -->
+      <section id="tab-dashboard" class="tab-pane active">
+        <div class="section-header">
+          <h2>Tổng quan Lưu trữ & Hệ thống</h2>
+          <p>Xem trạng thái ổ đĩa SSD/HDD, dung lượng rác tích lũy và giải phóng không gian ngay lập tức.</p>
+        </div>
+
+        <!-- Drives Cards Grid -->
+        <div id="drives-grid" class="drives-grid">
+          <!-- Dynamically populated via JS -->
+          <div class="card" style="text-align: center; color: var(--text-muted); padding: 40px;">
+            Đang tải dữ liệu ổ đĩa...
+          </div>
+        </div>
+
+        <!-- Quick Clean Hero Banner -->
+        <div class="quick-action-banner">
+          <div class="banner-content">
+            <h3>Dọn Dẹp Nhanh 1-Click (Khuyên dùng)</h3>
+            <p>Tự động quét và làm sạch an toàn các tệp tạm (%TEMP%), crash dump, và bộ nhớ đệm không dùng tới.</p>
+            <div class="banner-stats">
+              <div class="stat-item">
+                <span id="quick-junk-estimate" class="stat-value">Đang tính...</span>
+                <span class="stat-label">File rác ước tính</span>
+              </div>
+              <div class="stat-item">
+                <span id="quick-recycle-estimate" class="stat-value">0 MB</span>
+                <span class="stat-label">Trong Thùng rác</span>
+              </div>
+            </div>
+          </div>
+          <div class="banner-actions">
+            <button id="btn-quick-clean" class="btn btn-primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+              Dọn Dẹp Nhanh Ngay
+            </button>
+            <button id="btn-empty-recycle" class="btn btn-secondary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+              Dọn Thùng Rác
+            </button>
+          </div>
+        </div>
+
+        <!-- Fast Tools Cards -->
+        <div class="tools-grid">
+          <div class="card tool-card" onclick="document.querySelector('[data-tab=\'tab-duplicates\']').click()">
+            <div class="tool-icon cyan">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            </div>
+            <div class="tool-info">
+              <h4>Quét Tệp Trùng Lặp</h4>
+              <p>Phát hiện file trùng nhau 100% bằng mã băm SHA-256 trên các ổ đĩa.</p>
+            </div>
+          </div>
+
+          <div class="card tool-card" onclick="document.querySelector('[data-tab=\'tab-large-files\']').click()">
+            <div class="tool-icon blue">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
+            </div>
+            <div class="tool-info">
+              <h4>Top Tệp Lớn Nhất</h4>
+              <p>Tìm các video, bộ cài đặt ISO ngốn hàng GB mà bạn quên xóa.</p>
+            </div>
+          </div>
+
+          <div class="card tool-card" onclick="document.querySelector('[data-tab=\'tab-optimizer\']').click()">
+            <div class="tool-icon green">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            </div>
+            <div class="tool-info">
+              <h4>Kích Hoạt TRIM SSD</h4>
+              <p>Khôi phục tốc độ ghi tối đa và kéo dài tuổi thọ cho ổ cứng thể rắn.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================
+           TAB 2: DỌN RÁC CHI TIẾT (SYSTEM JUNK)
+           =================================================================== -->
+      <section id="tab-junk" class="tab-pane">
+        <div class="section-header">
+          <h2>Quét & Dọn Dẹp File Rác Chuyên Sâu</h2>
+          <p>Tùy chọn chi tiết từng danh mục tệp tạm, bộ nhớ đệm trình duyệt, cache lập trình và tệp cập nhật.</p>
+        </div>
+
+        <div class="card junk-control-bar">
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <button id="btn-scan-junk" class="btn btn-primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              Quét Danh Mục Rác
+            </button>
+            <button id="btn-select-all-junk" class="btn btn-outline">Chọn tất cả</button>
+            <button id="btn-deselect-all-junk" class="btn btn-outline">Bỏ chọn</button>
+          </div>
+
+          <div style="display: flex; gap: 14px; align-items: center;">
+            <div style="text-align: right;">
+              <span id="selected-junk-size" style="font-size: 1.15rem; font-weight: 800; color: var(--primary);">0 B</span>
+              <div style="font-size: 0.78rem; color: var(--text-muted);">Đã chọn giải phóng</div>
+            </div>
+            <button id="btn-clean-selected-junk" class="btn btn-danger" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+              Dọn Dẹp Đã Chọn
+            </button>
+          </div>
+        </div>
+
+        <!-- Junk Category Items List -->
+        <div id="junk-categories-list" class="junk-list">
+          <!-- Populated via JS -->
+          <div class="card" style="text-align: center; color: var(--text-muted); padding: 30px;">
+            Nhấn "Quét Danh Mục Rác" để bắt đầu phân tích hệ thống.
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================
+           TAB 3: TÌM TỆP TRÙNG LẶP (DUPLICATE FINDER)
+           =================================================================== -->
+      <section id="tab-duplicates" class="tab-pane">
+        <div class="section-header">
+          <h2>Tìm & Loại Bỏ Tệp Trùng Lặp (Duplicate Files)</h2>
+          <p>Thuật toán đối chiếu thông minh 3 giai đoạn (Kích thước &rarr; Mã băm đầu tệp &rarr; Toàn phần SHA-256).</p>
+        </div>
+
+        <!-- Filter / Settings Bar -->
+        <div class="card filter-card">
+          <div class="form-group filter-path-group">
+            <label>Phạm vi quét (Thư mục hoặc Ổ đĩa)</label>
+            <div class="filter-input-row">
+              <input type="text" id="dup-target-dir" class="form-input" value="C:\, D:\" placeholder="Ví dụ: C:\, D:\ hoặc C:\ hoặc D:\">
+              <button id="btn-browse-dup-folder" type="button" class="btn btn-outline btn-browse" title="Chọn thư mục từ máy tính">
+                📁 Duyệt...
+              </button>
+            </div>
+          </div>
+          <div class="filter-controls-row">
+            <div class="form-group">
+              <label>Dung lượng tối thiểu</label>
+              <select id="dup-min-size" class="form-select">
+                <option value="1">Lớn hơn 1 MB (Mặc định)</option>
+                <option value="5">Lớn hơn 5 MB</option>
+                <option value="10">Lớn hơn 10 MB (Quét nhanh)</option>
+                <option value="50">Lớn hơn 50 MB</option>
+                <option value="100">Lớn hơn 100 MB</option>
+                <option value="0">Tất cả kích thước</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Loại tệp</label>
+              <select id="dup-file-type" class="form-select">
+                <option value="all">Tất cả định dạng</option>
+                <option value="images">Hình ảnh (jpg, png, webp, raw...)</option>
+                <option value="videos">Video (mp4, mkv, mov, avi...)</option>
+                <option value="docs">Tài liệu (pdf, docx, xlsx...)</option>
+                <option value="archives">Tệp nén (zip, rar, 7z, iso...)</option>
+              </select>
+            </div>
+            <div class="filter-btn-group">
+              <button id="btn-start-duplicate-scan" class="btn btn-primary btn-scan-action">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                Bắt Đầu Quét Trùng Lặp
+              </button>
+              <button id="btn-cancel-duplicate-scan" class="btn btn-outline btn-scan-action" style="display: none;">
+                Hủy Quét
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Path Shortcuts -->
+        <div style="display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap;">
+          <span style="font-size: 0.8rem; color: var(--text-dim); align-self: center;">Chọn nhanh:</span>
+          <button class="btn btn-sm btn-primary quick-path-btn" data-path="C:\, D:\" style="font-weight: 700;">✨ Cả 2 Ổ (C:\ & D:\)</button>
+          <button class="btn btn-sm btn-outline quick-path-btn" data-path="C:\">Ổ C:\</button>
+          <button class="btn btn-sm btn-outline quick-path-btn" data-path="D:\">Ổ D:\</button>
+          <button class="btn btn-sm btn-outline quick-path-btn" data-path="C:\Users\HuyBlink\Downloads">Thư mục Downloads</button>
+          <button class="btn btn-sm btn-outline quick-path-btn" data-path="C:\Users\HuyBlink\Desktop">Màn hình Desktop</button>
+          <button class="btn btn-sm btn-outline quick-path-btn" data-path="C:\Users\HuyBlink\Documents">Tài liệu Documents</button>
+        </div>
+
+        <!-- Progress Box (Hidden when idle) -->
+        <div id="dup-progress-card" class="card" style="display: none; margin-bottom: 24px;">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+            <span id="dup-progress-phase" style="font-weight: 700; color: var(--primary);">Đang chuẩn bị...</span>
+            <span id="dup-progress-pct" style="font-weight: 800;">0%</span>
+          </div>
+          <div class="progress-container">
+            <div id="dup-progress-bar" class="progress-bar" style="width: 0%;"></div>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 0.82rem; color: var(--text-muted); margin-top: 8px;">
+            <span id="dup-progress-file">...</span>
+            <span id="dup-progress-stats">0 tệp đã quét</span>
+          </div>
+        </div>
+
+        <!-- Results Header Controls (Visible after scan) -->
+        <div id="dup-results-bar" class="card" style="display: none; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 14px;">
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <button id="btn-dup-keep-oldest" class="btn btn-outline btn-sm">Giữ lại bản cũ nhất (Gốc)</button>
+            <button id="btn-dup-keep-newest" class="btn btn-outline btn-sm">Giữ lại bản mới nhất</button>
+            <button id="btn-dup-deselect" class="btn btn-outline btn-sm">Bỏ chọn tất cả</button>
+          </div>
+          <div style="display: flex; gap: 16px; align-items: center;">
+            <div style="text-align: right;">
+              <span id="dup-selected-freed" style="font-weight: 800; font-size: 1.15rem; color: var(--primary);">0 B</span>
+              <div style="font-size: 0.78rem; color: var(--text-muted);">Sẽ giải phóng</div>
+            </div>
+            <button id="btn-delete-duplicates" class="btn btn-danger">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+              Xóa Tệp Trùng Lặp Đã Chọn
+            </button>
+          </div>
+        </div>
+
+        <!-- Duplicate Groups Container -->
+        <div id="duplicate-groups-container">
+          <div class="card" style="text-align: center; color: var(--text-muted); padding: 40px;">
+            Nhập đường dẫn và nhấn "Bắt Đầu Quét Trùng Lặp" để tìm tệp dư thừa.
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================
+           TAB 4: TỆP DUNG LƯỢNG LỚN (LARGE FILES)
+           =================================================================== -->
+      <section id="tab-large-files" class="tab-pane">
+        <div class="section-header">
+          <h2>Phân Tích Tệp Dung Lượng Lớn</h2>
+          <p>Tìm nhanh những file chiếm nhiều dung lượng nhất trên máy (video, file zip, bộ cài đặt iso,...).</p>
+        </div>
+
+        <!-- Filter Controls -->
+        <div class="card filter-card">
+          <div class="form-group filter-path-group">
+            <label>Ổ đĩa hoặc Thư mục cần tìm</label>
+            <div class="filter-input-row">
+              <input type="text" id="large-target-dir" class="form-input" value="D:\" placeholder="Ví dụ: D:\ hoặc C:\Users\HuyBlink\Downloads">
+              <button id="btn-browse-large-folder" type="button" class="btn btn-outline btn-browse" title="Chọn thư mục từ máy tính">
+                📁 Duyệt...
+              </button>
+            </div>
+          </div>
+          <div class="filter-controls-row">
+            <div class="form-group">
+              <label>Kích thước tối thiểu</label>
+              <select id="large-min-size" class="form-select">
+                <option value="100">Lớn hơn 100 MB (Mặc định)</option>
+                <option value="50">Lớn hơn 50 MB</option>
+                <option value="500">Lớn hơn 500 MB</option>
+                <option value="1000">Lớn hơn 1 GB</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Số lượng tệp tối đa</label>
+              <select id="large-limit" class="form-select">
+                <option value="50">Top 50 tệp</option>
+                <option value="100" selected>Top 100 tệp</option>
+                <option value="200">Top 200 tệp</option>
+              </select>
+            </div>
+            <div class="filter-btn-group">
+              <button id="btn-scan-large-files" class="btn btn-primary btn-scan-action">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                Quét Tệp Lớn
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Path Shortcuts for Large Files -->
+        <div style="display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap;">
+          <span style="font-size: 0.8rem; color: var(--text-dim); align-self: center;">Chọn nhanh:</span>
+          <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="D:\">Ổ D:\</button>
+          <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="C:\">Ổ C:\</button>
+          <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="C:\Users\HuyBlink\Downloads">Thư mục Downloads</button>
+          <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="C:\Users\HuyBlink\Desktop">Màn hình Desktop</button>
+          <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="C:\Users\HuyBlink\Videos">Thư mục Videos</button>
+        </div>
+
+        <!-- Large Files Table Container -->
+        <div id="large-files-container" class="card" style="padding: 0; overflow: hidden;">
+          <div style="text-align: center; color: var(--text-muted); padding: 40px;">
+            Nhấn "Quét Tệp Lớn" để bắt đầu xếp hạng các tệp ngốn dung lượng.
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================
+           TAB 2: QUẢN LÝ & DỌN RAM (MEM REDUCT ENGINE)
+           =================================================================== -->
+      <section id="tab-memory" class="tab-pane">
+        <div class="section-header">
+          <h2>Quản Lý RAM & Tự Động Giải Phóng (Chuẩn Mem Reduct)</h2>
+          <p>Thu hồi Standby List, giải phóng bộ nhớ đệm Windows và dọn RAM nhàn rỗi theo thời gian thực mà không làm lag hay drop FPS.</p>
+        </div>
+
+        <!-- Live RAM Hero Grid -->
+        <div class="ram-hero-grid">
+          <!-- Left: Circular Gauge -->
+          <div class="card ram-gauge-card">
+            <div class="ram-circle-wrapper">
+              <svg class="ram-circle-svg" viewBox="0 0 200 200">
+                <defs>
+                  <linearGradient id="ramGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#00e5ff" />
+                    <stop offset="100%" stop-color="#3b82f6" />
+                  </linearGradient>
+                </defs>
+                <circle class="ram-circle-bg" cx="100" cy="100" r="90"></circle>
+                <circle id="ram-circle-bar" class="ram-circle-progress" cx="100" cy="100" r="90"></circle>
+              </svg>
+              <div class="ram-circle-center">
+                <div id="ram-percent-display" class="ram-percent-value">0%</div>
+                <div class="ram-percent-label">RAM Sử Dụng</div>
+              </div>
+            </div>
+            <div id="ram-summary-text" style="font-size: 0.95rem; font-weight: 600; color: var(--text-main); margin-bottom: 6px;">
+              Đang tính toán...
+            </div>
+            <div id="ram-admin-indicator" style="font-size: 0.8rem; color: var(--text-muted);">
+              Sử dụng Windows Kernel Native API
+            </div>
+            <button id="btn-manual-clean-ram" class="btn btn-primary" style="margin-top: 18px; width: 100%;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              ⚡ Dọn Dẹp RAM Ngay
+            </button>
+          </div>
+
+          <!-- Right: Detailed Memory Metrics (2x2 equal height grid) -->
+          <div class="ram-stats-grid">
+            <div class="ram-stat-card in-use">
+              <div class="ram-stat-title">
+                <span>ĐANG SỬ DỤNG (ACTIVE)</span>
+                <svg style="width:16px;height:16px;color:var(--secondary);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="5"/><path d="M16 11.37A4 4 0 1112.63 8 4 4 0 0116 11.37z"/></svg>
+              </div>
+              <div id="ram-stat-in-use" class="ram-stat-value">0.00 GB</div>
+              <div id="ram-stat-in-use-sub" class="ram-stat-subtitle">Bộ nhớ ứng dụng & hệ thống</div>
+            </div>
+
+            <div class="ram-stat-card standby">
+              <div class="ram-stat-title">
+                <span>STANDBY CACHE (BỘ NHỚ ĐỆM)</span>
+                <svg style="width:16px;height:16px;color:var(--primary);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9"/></svg>
+              </div>
+              <div id="ram-stat-standby" class="ram-stat-value">0.00 GB</div>
+              <div class="ram-stat-subtitle">Có thể giải phóng ngay tức thì</div>
+            </div>
+
+            <div class="ram-stat-card free">
+              <div class="ram-stat-title">
+                <span>BỘ NHỚ TRỐNG (FREE)</span>
+                <svg style="width:16px;height:16px;color:var(--success);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+              </div>
+              <div id="ram-stat-free" class="ram-stat-value">0.00 GB</div>
+              <div class="ram-stat-subtitle">Sẵn sàng cấp phát cho ứng dụng mới</div>
+            </div>
+
+            <div class="ram-stat-card pagefile">
+              <div class="ram-stat-title">
+                <span>PAGEFILE (BỘ NHỚ ẢO)</span>
+                <svg style="width:16px;height:16px;color:var(--warning);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 12h10"/></svg>
+              </div>
+              <div id="ram-stat-pagefile" class="ram-stat-value">0.00 GB</div>
+              <div id="ram-stat-pagefile-sub" class="ram-stat-subtitle">Đã dùng 0% bộ nhớ đệm ảo</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Full-Width Zero-Lag & Automation Controls Card -->
+        <div class="card ram-automation-card">
+          <h4 style="font-size: 1rem; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                <svg style="width:18px;height:18px;color:var(--success);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                Bảo Vệ Hiệu Năng & Tự Động Dọn Dẹp Chạy Ngầm (Zero-Lag)
+              </h4>
+
+              <div class="switch-container">
+                <div>
+                  <div style="font-weight: 600; font-size: 0.92rem; display: flex; align-items: center; gap: 6px;">
+                    <span>Khởi chạy cùng Windows (Start with Windows)</span>
+                    <span class="badge" style="background: rgba(6,182,212,0.15); color: var(--primary); font-size: 0.72rem;">Khuyên dùng</span>
+                  </div>
+                  <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;">Tự động khởi động ngầm trong khay hệ thống (System Tray) khi bật máy tính để giám sát RAM liên tục</div>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="chk-autostart-windows">
+                  <span class="slider-toggle"></span>
+                </label>
+              </div>
+
+              <div class="switch-container">
+                <div>
+                  <div style="font-weight: 600; font-size: 0.92rem;">Tự động dọn RAM khi vượt ngưỡng</div>
+                  <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;">Tiến trình nền IDLE kiểm tra và tự động dọn RAM khi máy đạt tải cao</div>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="chk-auto-clean-ram">
+                  <span class="slider-toggle"></span>
+                </label>
+              </div>
+
+              <div style="margin: 14px 0; padding: 12px 16px; background: rgba(0,0,0,0.25); border-radius: var(--radius-sm); border: 1px solid var(--card-border);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                  <span style="font-size: 0.85rem; font-weight: 600;">Ngưỡng kích hoạt dọn tự động:</span>
+                  <span id="lbl-threshold-val" style="font-size: 0.95rem; font-weight: 800; color: var(--primary);">80%</span>
+                </div>
+                <input type="range" id="range-clean-threshold" min="65" max="95" step="5" value="80" style="width: 100%; accent-color: var(--primary); cursor: pointer;">
+                <div style="display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--text-dim); margin-top: 4px;">
+                  <span>65% (Dọn thường xuyên)</span>
+                  <span>80% (Khuyên dùng)</span>
+                  <span>95% (Chỉ dọn khi sắp đầy)</span>
+                </div>
+              </div>
+
+              <div class="switch-container">
+                <div>
+                  <div style="font-weight: 600; font-size: 0.92rem; display: flex; align-items: center; gap: 6px;">
+                    <span>Gaming Guard: Tự ngắt dọn khi chơi Game Fullscreen</span>
+                    <span class="badge" style="background: rgba(16,185,129,0.15); color: var(--success); font-size: 0.72rem;">Chống drop FPS</span>
+                  </div>
+                  <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;">Tạm hoãn mọi chu kỳ dọn dẹp khi phát hiện game DirectX/Vulkan toàn màn hình để giữ FPS ổn định tuyệt đối</div>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="chk-game-guard" checked>
+                  <span class="slider-toggle"></span>
+                </label>
+              </div>
+
+              <!-- Options -->
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 14px;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; cursor: pointer;">
+                  <input type="checkbox" id="chk-opt-standby" class="custom-checkbox" checked>
+                  <span>Xóa Standby List (Khuyên dùng)</span>
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; cursor: pointer;">
+                  <input type="checkbox" id="chk-opt-workingsets" class="custom-checkbox" checked>
+                  <span>Thu hồi Working Sets ứng dụng nhàn rỗi</span>
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; cursor: pointer;">
+                  <input type="checkbox" id="chk-opt-protect-foreground" class="custom-checkbox" checked>
+                  <span style="color: var(--success); font-weight: 600;">Bảo vệ App/Game đang active (Bỏ qua)</span>
+                </label>
+              </div>
+
+              <!-- Live Auto Clean Status Log -->
+              <div style="margin-top: 14px; font-size: 0.8rem; color: var(--text-muted); display: flex; gap: 20px; flex-wrap: wrap;">
+                <span>Lần dọn gần nhất: <strong id="lbl-daemon-last-time" style="color: var(--text-main);">Chưa kích hoạt</strong></span>
+                <span>Thu hồi gần nhất: <strong id="lbl-daemon-last-freed" style="color: var(--success);">0 B</strong></span>
+                <span>Tổng số lần tự dọn: <strong id="lbl-daemon-clean-count" style="color: var(--primary);">0</strong></span>
+              </div>
+            </div>
+      </section>
+
+      <!-- ===================================================================
+           TAB 6: SỨC KHỎE & TỐI ƯU Ổ CỨNG (S.M.A.R.T & TRIM)
+           =================================================================== -->
+      <section id="tab-optimizer" class="tab-pane">
+        <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 16px;">
+          <div>
+            <h2>Sức Khỏe & Tối Ưu Hóa Ổ Cứng (S.M.A.R.T & TRIM)</h2>
+            <p>Giám sát nhiệt độ, tuổi thọ ô nhớ SSD, phát hiện lỗi phần cứng và kích hoạt lệnh TRIM tối ưu.</p>
+          </div>
+          <button id="btn-refresh-smart" class="btn btn-sm btn-outline">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+            Làm Mới S.M.A.R.T
+          </button>
+        </div>
+
+        <!-- S.M.A.R.T Dynamic Cards Grid -->
+        <div id="smart-disks-container" class="smart-cards-grid">
+          <div class="card" style="text-align: center; color: var(--text-muted); padding: 40px; grid-column: 1 / -1;">
+            <div class="pulse-dot" style="margin: 0 auto 16px auto;"></div>
+            Đang đọc chỉ số phần cứng S.M.A.R.T...
+          </div>
+        </div>
+
+        <!-- Terminal Output -->
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h4 style="font-size: 1rem; font-weight: 700;">Nhật Ký Thực Thi Lệnh Tối Ưu (TRIM Log)</h4>
+            <span style="font-size: 0.78rem; color: var(--text-dim);">PowerShell Optimize-Volume</span>
+          </div>
+          <div id="trim-terminal" class="terminal-output">Sẵn sàng thực thi lệnh tối ưu hóa ổ cứng...</div>
+        </div>
+
+        <!-- Educational / Tips Box -->
+        <div class="card" style="margin-top: 24px; border-left: 4px solid var(--warning);">
+          <h4 style="font-weight: 700; color: var(--warning); margin-bottom: 8px;">💡 Lưu ý quan trọng về SSD:</h4>
+          <p style="font-size: 0.88rem; color: var(--text-muted); line-height: 1.6;">
+            • Với ổ <strong>SSD (Solid State Drive)</strong>, tuyệt đối <strong>KHÔNG</strong> nên chống phân mảnh (Defragmentation) truyền thống vì sẽ làm giảm tuổi thọ cell nhớ flash mà không tăng tốc độ.<br>
+            • Lệnh <strong>TRIM (ReTrim)</strong> là phương pháp chuẩn và tối ưu nhất: thông báo cho bộ điều khiển SSD biết các khối ô nhớ chứa dữ liệu đã bị xóa, để SSD thu hồi và chuẩn bị sẵn ô nhớ trống cho các lần ghi tiếp theo với tốc độ tối đa.
+          </p>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Confirmation Deletion Modal -->
+  <div id="confirm-modal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modal-title">Xác Nhận Dọn Dẹp</h3>
+        <button class="modal-close" id="modal-btn-close">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body-text">
+        Bạn có chắc chắn muốn tiến hành xóa các tệp này?
+      </div>
+      <div style="margin-bottom: 20px; padding: 12px 16px; background: rgba(0,0,0,0.3); border-radius: var(--radius-sm); border: 1px solid var(--card-border);">
+        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 0.9rem;">
+          <input type="checkbox" id="modal-use-recycle-bin" class="custom-checkbox" checked>
+          <span><strong>Chuyển vào Thùng rác (Recycle Bin)</strong> <span style="color: var(--text-muted); font-size: 0.8rem;">— An toàn, có thể khôi phục bất cứ lúc nào</span></span>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button id="modal-btn-cancel" class="btn btn-outline">Hủy bỏ</button>
+        <button id="modal-btn-confirm" class="btn btn-danger">Xác Nhận Xóa</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Application Script -->
+  <script>
+window.onerror = function(msg, url, line, col, error) {
+  console.error('[CleanPC Error]:', msg, 'Line:', line);
+};
+
+window.onunhandledrejection = function(e) {
+  console.warn('[CleanPC Unhandled Promise]:', e.reason);
+};
+
+// Native Desktop API Shim: If running inside pywebview desktop app,
+// intercept fetch() calls and route directly to window.pywebview.api!
+(function() {
+  const originalFetch = window.fetch;
+  window.fetch = async function(url, options = {}) {
+    if (window.pywebview && window.pywebview.api) {
+      const api = window.pywebview.api;
+      let body = {};
+      if (options.body) {
+        try { body = typeof options.body === 'string' ? JSON.parse(options.body) : options.body; } catch(e) {}
+      }
+
+      let result = null;
+      if (url === '/api/system/overview') result = await api.get_system_overview();
+      else if (url === '/api/memory/status') result = await api.get_memory_status();
+      else if (url === '/api/memory/clean') result = await api.clean_memory(body?.purge_standby, body?.empty_working_sets, body?.flush_modified, body?.skip_foreground);
+      else if (url === '/api/memory/daemon_config' && options.method === 'POST') result = await api.set_memory_daemon_config(body?.enabled, body?.threshold_pct, body?.cooldown_sec, body?.pause_in_game, body?.purge_standby, body?.empty_working_sets, body?.flush_modified, body?.skip_foreground);
+      else if (url === '/api/memory/daemon_config') result = await api.get_memory_daemon_config();
+      else if (url === '/api/autostart' && options.method === 'POST') result = await api.set_autostart(body?.enabled);
+      else if (url === '/api/autostart') result = await api.get_autostart_status();
+      else if (url === '/api/settings' && options.method === 'POST') result = await api.save_settings(body);
+      else if (url === '/api/settings') result = await api.get_settings();
+      else if (url === '/api/disks/smart') result = await api.get_disks_smart(body?.force_refresh);
+      else if (url === '/api/junk/categories') result = await api.get_junk_categories();
+      else if (url === '/api/junk/scan') result = await api.scan_junk();
+      else if (url === '/api/junk/clean') result = await api.clean_junk(body.category_ids, body.use_recycle_bin);
+      else if (url === '/api/junk/close_temp_lockers') result = await api.close_temp_blocking_processes();
+      else if (url === '/api/recycle_bin/empty') result = await api.empty_recycle_bin(body?.drive);
+      else if (url === '/api/duplicates/start') result = await api.start_duplicate_scan(body.targets, body.min_size_mb, body.file_types);
+      else if (url === '/api/duplicates/status') result = await api.get_duplicate_status();
+      else if (url === '/api/duplicates/results') result = await api.get_duplicate_results();
+      else if (url === '/api/duplicates/cancel') result = await api.cancel_duplicate_scan();
+      else if (url === '/api/duplicates/delete') result = await api.delete_duplicates(body.paths, body.use_recycle_bin);
+      else if (url === '/api/large_files/scan') result = await api.scan_large_files(body.target_dir, body.min_size_mb, body.limit);
+      else if (url === '/api/optimize/trim') result = await api.optimize_trim(body.drive);
+      else if (url === '/api/system/open_explorer') result = await api.open_explorer(body.path);
+      else if (url === '/api/system/choose_folder') result = await api.choose_folder();
+      else if (url === '/api/system/restart_admin') result = await api.restart_admin();
+      else if (url === '/api/system/shutdown') { window.close(); result = { success: true }; }
+
+      if (result !== null) {
+        return {
+          ok: !result.error,
+          status: result.error ? 500 : 200,
+          json: async () => result,
+          text: async () => JSON.stringify(result)
+        };
+      }
+    }
+    return originalFetch(url, options);
+  };
+})();
+</script>
+<script src="app.js?v=7"></script>
+</body>
+</html>
