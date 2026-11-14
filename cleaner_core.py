@@ -121,6 +121,26 @@ def send_to_recycle_bin(path: str) -> bool:
         print(f"[Error] send_to_recycle_bin for {path}: {e}")
         return False
 
+def send_to_recycle_bin_batch(paths: list) -> bool:
+    """Send multiple files/folders to the Windows Recycle Bin in a single Shell call."""
+    abs_paths = [os.path.abspath(p) for p in paths if os.path.exists(p)]
+    if not abs_paths:
+        return True
+    try:
+        joined = '\0'.join(abs_paths) + '\0\0'
+        buf = ctypes.create_unicode_buffer(joined)
+        shfs = SHFILEOPSTRUCT()
+        shfs.hwnd = None
+        shfs.wFunc = FO_DELETE
+        shfs.pFrom = ctypes.cast(buf, wintypes.LPCWSTR)
+        shfs.pTo = None
+        shfs.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(shfs))
+        return result == 0 and not shfs.fAnyOperationsAborted
+    except Exception as e:
+        print(f"[Error] send_to_recycle_bin_batch ({len(abs_paths)} items): {e}")
+        return False
+
 def permanent_delete(path: str) -> bool:
     """Permanently delete a file or directory, handling read-only permissions on Windows."""
     try:
@@ -745,8 +765,43 @@ def clean_junk_category(category_id: str, use_recycle_bin: bool = False) -> dict
                 failed_files += 1
             continue
 
+        def _record_failure(fp: str, sz: int):
+            nonlocal failed_files, failed_bytes
+            failed_files += 1
+            failed_bytes += sz
+            try:
+                rel = os.path.relpath(fp, base_path)
+                top = rel.split(os.sep)[0]
+                locked_folders[top] = locked_folders.get(top, 0) + sz
+            except Exception:
+                pass
+
+        def _flush_recycle_batch(batch: list):
+            nonlocal deleted_files, freed_bytes
+            if not batch:
+                return
+            if send_to_recycle_bin_batch([fp for fp, _ in batch]):
+                deleted_files += len(batch)
+                freed_bytes += sum(sz for _, sz in batch)
+            else:
+                for fp, sz in batch:
+                    ok = False
+                    try:
+                        ok = send_to_recycle_bin(fp)
+                        if not ok:
+                            ok = permanent_delete(fp)
+                    except Exception:
+                        ok = False
+                    if ok:
+                        deleted_files += 1
+                        freed_bytes += sz
+                    else:
+                        _record_failure(fp, sz)
+            batch.clear()
+
         try:
             # Walk bottom-up to allow directory cleanup after files are removed
+            recycle_batch = []
             for root, dirs, files in os.walk(base_path, topdown=False):
                 for f in files:
                     if not is_match_all:
@@ -763,27 +818,24 @@ def clean_junk_category(category_id: str, use_recycle_bin: bool = False) -> dict
                     except Exception:
                         sz = 0
 
-                    ok = False
-                    try:
-                        if use_recycle_bin:
-                            ok = send_to_recycle_bin(file_path)
-                        if not ok:
-                            ok = permanent_delete(file_path)
-                    except Exception:
-                        ok = False
-
-                    if ok:
-                        deleted_files += 1
-                        freed_bytes += sz
+                    if use_recycle_bin:
+                        recycle_batch.append((file_path, sz))
+                        if len(recycle_batch) >= 100:
+                            _flush_recycle_batch(recycle_batch)
                     else:
-                        failed_files += 1
-                        failed_bytes += sz
+                        ok = False
                         try:
-                            rel = os.path.relpath(file_path, base_path)
-                            top = rel.split(os.sep)[0]
-                            locked_folders[top] = locked_folders.get(top, 0) + sz
+                            ok = permanent_delete(file_path)
                         except Exception:
-                            pass
+                            ok = False
+                        if ok:
+                            deleted_files += 1
+                            freed_bytes += sz
+                        else:
+                            _record_failure(file_path, sz)
+
+                if use_recycle_bin and recycle_batch:
+                    _flush_recycle_batch(recycle_batch)
 
                 # Try to clean empty subdirectories (never remove the base_path itself)
                 root_norm = os.path.normcase(os.path.abspath(root))

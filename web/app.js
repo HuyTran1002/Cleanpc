@@ -172,7 +172,13 @@ async function loadSystemOverview() {
 
     // Update Quick Clean Estimates
     document.getElementById('quick-recycle-estimate').textContent = data.recycle_bin.total_formatted;
-    document.getElementById('quick-junk-estimate').textContent = '2 - 6 GB';
+    const quickJunkEl = document.getElementById('quick-junk-estimate');
+    if (state.junkCategories && state.junkCategories.length > 0) {
+      const totalJunkBytes = state.junkCategories.reduce((sum, c) => sum + (c.total_bytes || 0), 0);
+      quickJunkEl.textContent = formatBytes(totalJunkBytes);
+    } else {
+      quickJunkEl.textContent = 'Chưa quét';
+    }
 
   } catch (err) {
     console.warn(`[CleanPC] Đang chờ kết nối máy chủ (${err.message}), thử lại sau 1.5s...`);
@@ -258,6 +264,8 @@ async function scanJunkCategories() {
 
     renderJunkList();
     updateJunkSelectedSummary();
+    const quickJunkEl = document.getElementById('quick-junk-estimate');
+    if (quickJunkEl) quickJunkEl.textContent = data.total_formatted || formatBytes(data.total_bytes || 0);
     showToast(`Quét hoàn tất: Phát hiện ${data.total_formatted} file rác!`, 'success');
 
   } catch (err) {
@@ -826,13 +834,35 @@ function closeModal() {
 // -----------------------------------------------------------------------------
 function setupEventListeners() {
   // Modal buttons
-  document.getElementById('modal-btn-close').addEventListener('click', closeModal);
-  document.getElementById('modal-btn-cancel').addEventListener('click', closeModal);
-  document.getElementById('modal-btn-confirm').addEventListener('click', async () => {
-    if (pendingAction) {
-      await pendingAction();
+  const btnModalClose = document.getElementById('modal-btn-close');
+  const btnModalCancel = document.getElementById('modal-btn-cancel');
+  const btnModalConfirm = document.getElementById('modal-btn-confirm');
+  let isModalBusy = false;
+
+  btnModalClose.addEventListener('click', () => { if (!isModalBusy) closeModal(); });
+  btnModalCancel.addEventListener('click', () => { if (!isModalBusy) closeModal(); });
+  btnModalConfirm.addEventListener('click', async () => {
+    if (isModalBusy) return;
+    if (!pendingAction) {
+      closeModal();
+      return;
     }
-    closeModal();
+    isModalBusy = true;
+    const origHtml = btnModalConfirm.innerHTML;
+    btnModalConfirm.disabled = true;
+    btnModalCancel.disabled = true;
+    btnModalClose.disabled = true;
+    btnModalConfirm.innerHTML = `<span class="pulse-dot"></span> Đang dọn dẹp...`;
+    try {
+      await pendingAction();
+    } finally {
+      isModalBusy = false;
+      btnModalConfirm.disabled = false;
+      btnModalCancel.disabled = false;
+      btnModalClose.disabled = false;
+      btnModalConfirm.innerHTML = origHtml;
+      closeModal();
+    }
   });
 
   // Junk Buttons
@@ -931,9 +961,76 @@ function setupEventListeners() {
   document.getElementById('btn-scan-large-files').addEventListener('click', scanLargeFiles);
 
   // Quick Clean 1-Click
-  document.getElementById('btn-quick-clean').addEventListener('click', () => {
-    document.querySelector('[data-tab="tab-junk"]').click();
-    showToast("Đã chuyển tới bảng Quét Rác Chi Tiết. Bạn có thể xem trước và nhấn Dọn dẹp an toàn!", "info");
+  const btnQuickClean = document.getElementById('btn-quick-clean');
+  btnQuickClean.addEventListener('click', async () => {
+    if (btnQuickClean.disabled) return;
+    const origHtml = btnQuickClean.innerHTML;
+    btnQuickClean.disabled = true;
+    btnQuickClean.innerHTML = `<span class="pulse-dot"></span> Đang quét rác an toàn...`;
+
+    try {
+      const res = await fetch('/api/junk/scan', { method: 'POST' });
+      const data = await res.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      state.junkCategories = data.categories || [];
+      state.selectedJunkCategories.clear();
+      state.junkCategories.forEach(cat => {
+        if (cat.default_checked && cat.total_bytes > 0) {
+          state.selectedJunkCategories.add(cat.id);
+        }
+      });
+
+      const quickJunkEl = document.getElementById('quick-junk-estimate');
+      if (quickJunkEl) {
+        quickJunkEl.textContent = data.total_formatted || formatBytes(data.total_bytes || 0);
+      }
+      renderJunkList();
+      updateJunkSelectedSummary();
+
+      const safeCats = state.junkCategories.filter(c => c.default_checked && c.total_bytes > 0);
+      if (safeCats.length === 0) {
+        showToast("Máy tính của bạn đang rất sạch! Không có file rác an toàn nào cần dọn.", "success");
+        return;
+      }
+
+      const safeIds = safeCats.map(c => c.id);
+      const safeBytes = safeCats.reduce((sum, c) => sum + (c.total_bytes || 0), 0);
+      const safeFiles = safeCats.reduce((sum, c) => sum + (c.total_files || 0), 0);
+
+      confirmDeleteAction({
+        title: "Xác Nhận Dọn Dẹp Nhanh 1-Click",
+        message: `Đã phát hiện <strong>${safeFiles.toLocaleString()} tệp rác an toàn</strong> thuộc <strong>${safeCats.length} danh mục</strong> (ước tính giải phóng <strong>${formatBytes(safeBytes)}</strong>).<br><br>Bạn có muốn tiến hành dọn dẹp ngay không?`,
+        onConfirm: async (useRecycleBin) => {
+          try {
+            const cleanRes = await fetch('/api/junk/clean', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ category_ids: safeIds, use_recycle_bin: useRecycleBin })
+            });
+            const d = await cleanRes.json();
+            if (!d.success && d.error) {
+              throw new Error(d.error);
+            }
+            let msg = `Đã dọn dẹp ${d.total_deleted_files || 0} tệp rác, giải phóng ${d.total_freed_formatted || '0 B'}!`;
+            if (d.total_locked_bytes > 0) {
+              msg += ` (${d.total_locked_formatted} đang bị ứng dụng khác khóa)`;
+            }
+            showToast(msg, 'success');
+            await Promise.all([loadSystemOverview(), scanJunkCategories()]);
+          } catch (err) {
+            showToast(`Lỗi dọn rác nhanh: ${err.message}`, 'danger');
+          }
+        }
+      });
+    } catch (err) {
+      showToast(`Lỗi quét rác: ${err.message}`, 'danger');
+    } finally {
+      btnQuickClean.disabled = false;
+      btnQuickClean.innerHTML = origHtml;
+    }
   });
 
   // Empty Recycle Bin
