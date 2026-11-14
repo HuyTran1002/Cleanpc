@@ -41,6 +41,13 @@
   box-sizing: border-box;
 }
 
+html.is-bg-paused *,
+html.is-bg-paused *::before,
+html.is-bg-paused *::after {
+  animation-play-state: paused !important;
+  transition: none !important;
+}
+
 html, body {
   height: 100%;
   width: 100%;

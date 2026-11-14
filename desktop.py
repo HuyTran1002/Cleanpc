@@ -144,35 +144,111 @@ def ensure_window_in_bounds(hwnd):
     except Exception:
         pass
 
+def _set_webview_suspended(suspended: bool):
+    """Toggle WinForms Form + WebView2 visibility, low-memory mode, and Chromium suspension without blocking UI thread."""
+    global main_window
+    if not main_window:
+        return
+    try:
+        native = getattr(main_window, 'native', None)
+        if not native:
+            return
+        from System import Action
+        try:
+            import Microsoft.Web.WebView2.Core as wv2core
+            low_lvl = getattr(wv2core.CoreWebView2MemoryUsageTargetLevel, 'Low', None)
+            norm_lvl = getattr(wv2core.CoreWebView2MemoryUsageTargetLevel, 'Normal', None)
+        except Exception:
+            low_lvl = norm_lvl = None
+
+        def _apply():
+            try:
+                wv = getattr(native, 'webview', None)
+                core = getattr(wv, 'CoreWebView2', None) if wv else None
+                if suspended:
+                    if core is not None:
+                        try:
+                            core.ExecuteScriptAsync("window.__setCleanPCBgPaused && window.__setCleanPCBgPaused(true)")
+                        except Exception:
+                            pass
+                    try:
+                        native.Hide()
+                    except Exception:
+                        pass
+                    if wv is not None:
+                        wv.Visible = False
+                    if core is not None:
+                        if low_lvl is not None:
+                            try:
+                                core.MemoryUsageTargetLevel = low_lvl
+                            except Exception:
+                                pass
+                        if hasattr(core, 'TrySuspendAsync'):
+                            try:
+                                core.TrySuspendAsync()
+                            except Exception:
+                                pass
+                else:
+                    if core is not None:
+                        if norm_lvl is not None:
+                            try:
+                                core.MemoryUsageTargetLevel = norm_lvl
+                            except Exception:
+                                pass
+                        if getattr(core, 'IsSuspended', False) and hasattr(core, 'Resume'):
+                            try:
+                                core.Resume()
+                            except Exception:
+                                pass
+                    if wv is not None:
+                        wv.Visible = True
+                    try:
+                        native.Show()
+                        native.Activate()
+                    except Exception:
+                        pass
+                    if core is not None:
+                        try:
+                            core.ExecuteScriptAsync("window.__setCleanPCBgPaused && window.__setCleanPCBgPaused(false)")
+                        except Exception:
+                            pass
+                    hwnd = get_window_hwnd()
+                    if hwnd:
+                        user32 = ctypes.windll.user32
+                        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                        user32.ShowWindow(hwnd, 5)  # SW_SHOW
+                        ensure_window_in_bounds(hwnd)
+                        user32.SetForegroundWindow(hwnd)
+            except Exception as inner_e:
+                print(f"[webview suspend state error]: {inner_e}")
+
+        if getattr(native, 'InvokeRequired', False):
+            native.BeginInvoke(Action(_apply))
+        else:
+            _apply()
+    except Exception as e:
+        print(f"[_set_webview_suspended error]: {e}")
+
+
 def show_main_window(icon=None, item=None):
     """Restore and bring main window to the foreground, perfectly centered."""
     global main_window
     try:
         if main_window:
-            try:
-                main_window.show()
-            except Exception:
-                pass
-
-            hwnd = get_window_hwnd()
-            if hwnd:
-                user32 = ctypes.windll.user32
-                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                user32.ShowWindow(hwnd, 5)  # SW_SHOW
-                ensure_window_in_bounds(hwnd)
-                user32.SetForegroundWindow(hwnd)
+            _set_webview_suspended(False)
     except Exception as e:
         print(f"[show_main_window error]: {e}")
 
 def hide_main_window(icon=None, item=None):
-    """Minimize main window to tray and trim working set to release idle memory."""
+    """Minimize main window to tray, suspend WebView2 processes, and trim working set."""
     global main_window
     try:
-        hwnd = get_window_hwnd()
-        if hwnd:
-            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
-        elif main_window:
-            main_window.hide()
+        if main_window:
+            _set_webview_suspended(True)
+        else:
+            hwnd = get_window_hwnd()
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 0)
 
         # Aggressively trim process working set on hide to minimize background RAM footprint
         try:
@@ -724,7 +800,8 @@ def main():
             return True  # Proceed with window destruction
 
         try:
-            hide_main_window()
+            # Defer hide outside FormClosing so WinForms cancels close cleanly without deadlock
+            threading.Timer(0.05, hide_main_window).start()
             if not notified_hide_flag[0] and tray_icon:
                 tray_icon.notify(
                     "CleanPC Master đang tiếp tục chạy ngầm trong khay hệ thống.\nBấm đúp vào biểu tượng RAM để mở lại bất kỳ lúc nào.",
@@ -741,6 +818,16 @@ def main():
     def on_window_shown(*args, **kwargs):
         if is_tray_mode:
             hide_main_window()
+            # Ensure CoreWebView2 is suspended once WebView2 finishes async initialization
+            def _ensure_tray_suspend():
+                time.sleep(1.5)
+                try:
+                    native = getattr(main_window, 'native', None)
+                    if native and not getattr(native, 'Visible', True):
+                        _set_webview_suspended(True)
+                except Exception:
+                    pass
+            threading.Thread(target=_ensure_tray_suspend, daemon=True).start()
             return
         try:
             hwnd = get_window_hwnd()

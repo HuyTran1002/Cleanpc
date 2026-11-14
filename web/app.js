@@ -30,6 +30,9 @@ function initApp() {
   loadSystemOverview();
   loadAutostartConfig();
   loadMemoryDaemonConfig();
+  if (document.hidden && window.__setCleanPCBgPaused) {
+    window.__setCleanPCBgPaused(true);
+  }
 }
 
 window.addEventListener('pywebviewready', () => {
@@ -1594,9 +1597,9 @@ function escapeHtml(str) {
 // -----------------------------------------------------------------------------
 // Power & Idle Optimization: Zero Resource Mode when Minimized / Hidden to Tray
 // -----------------------------------------------------------------------------
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    // Window minimized or sent to system tray: completely freeze polling
+window.__setCleanPCBgPaused = function setCleanPCBgPaused(paused) {
+  document.documentElement.classList.toggle('is-bg-paused', !!paused);
+  if (paused) {
     if (state.memoryPollTimer) {
       clearInterval(state.memoryPollTimer);
       state.memoryPollTimer = null;
@@ -1610,7 +1613,6 @@ document.addEventListener('visibilitychange', () => {
       state.tuningPollTimer = null;
     }
   } else {
-    // Window restored to foreground: resume live polling if memory or tuning tab is active
     const activeTab = document.querySelector('.nav-item.active');
     const tabId = activeTab ? activeTab.getAttribute('data-tab') : '';
     if (tabId === 'tab-memory') {
@@ -1625,6 +1627,10 @@ document.addEventListener('visibilitychange', () => {
       }
     }
   }
+};
+
+document.addEventListener('visibilitychange', () => {
+  window.__setCleanPCBgPaused(document.hidden);
 });
 
 // -----------------------------------------------------------------------------
