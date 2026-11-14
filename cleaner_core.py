@@ -2595,6 +2595,74 @@ def _get_display_refresh_hz() -> int:
     return max_hz
 
 
+def _get_display_mux_info() -> dict:
+    """Inspect active vs. available GPUs via EnumDisplayDevicesW to detect MUX dGPU lock and iGPU vendor."""
+    class _DISPLAY_DEVICEW(ctypes.Structure):
+        _fields_ = [
+            ("cb", ctypes.c_uint32),
+            ("DeviceName", ctypes.c_wchar * 32),
+            ("DeviceString", ctypes.c_wchar * 128),
+            ("StateFlags", ctypes.c_uint32),
+            ("DeviceID", ctypes.c_wchar * 128),
+            ("DeviceKey", ctypes.c_wchar * 128),
+        ]
+
+    active_primary = ""
+    active_any = ""
+    seen_adapters = []
+    try:
+        user32 = ctypes.windll.user32
+        dd = _DISPLAY_DEVICEW()
+        dd.cb = ctypes.sizeof(_DISPLAY_DEVICEW)
+        idx = 0
+        while user32.EnumDisplayDevicesW(None, idx, ctypes.byref(dd), 0):
+            idx += 1
+            name = (dd.DeviceString or "").strip()
+            if name and name not in seen_adapters:
+                seen_adapters.append(name)
+            flags = int(dd.StateFlags)
+            if (flags & 0x5) == 0x5 and not active_primary:
+                active_primary = name
+            if (flags & 0x1) and not active_any:
+                active_any = name
+    except Exception:
+        pass
+
+    active_gpu = active_primary or active_any
+    has_nvidia = any("nvidia" in a.lower() for a in seen_adapters)
+    igpu_name = next(
+        (
+            a for a in seen_adapters
+            if "intel" in a.lower() or (("amd" in a.lower() or "radeon" in a.lower()) and has_nvidia)
+        ),
+        "",
+    )
+    has_igpu = bool(igpu_name)
+    if igpu_name:
+        low = igpu_name.lower()
+        igpu_short = "Intel iGPU" if "intel" in low else ("AMD iGPU" if ("amd" in low or "radeon" in low) else "iGPU")
+    else:
+        igpu_short = "iGPU"
+
+    dgpu_only_active = bool(has_nvidia and has_igpu and "nvidia" in active_gpu.lower())
+    if dgpu_only_active:
+        mode_label = "NVIDIA GPU only (Khóa card rời)"
+    elif has_nvidia and has_igpu:
+        mode_label = "Optimus / Hybrid iGPU"
+    else:
+        mode_label = active_gpu or "Mặc định"
+
+    return {
+        "active_gpu": active_gpu,
+        "has_nvidia": has_nvidia,
+        "has_igpu": has_igpu,
+        "igpu_name": igpu_name,
+        "igpu_short": igpu_short,
+        "dgpu_only_active": dgpu_only_active,
+        "mode_label": mode_label,
+    }
+
+
 def _recommended_max_fps(refresh_hz: int) -> int:
     """Calculate optimal G-Sync/VRR FPS cap (3 FPS below active panel max Hz)."""
     if refresh_hz >= 75:
@@ -2644,12 +2712,13 @@ def _get_nvidia_telemetry() -> dict:
         "power_w": None,
         "clock_mhz": None,
         "mem_clock_mhz": None,
+        "util_pct": None,
     }
     try:
         res = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=name,pstate,temperature.gpu,power.draw,clocks.gr,clocks.mem",
+                "--query-gpu=name,pstate,temperature.gpu,power.draw,clocks.gr,clocks.mem,utilization.gpu",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -2676,6 +2745,7 @@ def _get_nvidia_telemetry() -> dict:
                     "power_w": _num(parts[3]),
                     "clock_mhz": _num(parts[4]),
                     "mem_clock_mhz": _num(parts[5]),
+                    "util_pct": _num(parts[6]) if len(parts) >= 7 else None,
                 })
     except Exception:
         pass
@@ -2878,7 +2948,7 @@ def get_system_tuning_status() -> dict:
         {
             "id": "nv_optimus", "group": "nvidia", "type": "toggle", "requires_admin": True, "available": nv_ok,
             "label": "Chuyển mạch GPU thông minh (Optimus Auto-Select)",
-            "desc": "Chỉ bật RTX khi chơi game/render; app nhẹ dùng Intel Iris Xe để máy mát và tiết kiệm pin.",
+            "desc": "Đặt Profile 3D về Auto-Select (lưu ý: nếu NVIDIA Control Panel → Manage Display mode đang khóa 'NVIDIA GPU only', cần chuyển về Automatic Select / Optimus tại đó).",
             "current": _nv_val(0x10F9DC80, 16) == 16 and _nv_val(0x10F9DC81, 16) == 16, "optimal": True,
             "is_optimal": nv_ok and _nv_val(0x10F9DC80, 16) == 16 and _nv_val(0x10F9DC81, 16) == 16,
         },
@@ -3050,6 +3120,7 @@ def get_system_tuning_status() -> dict:
     ]
 
     apps = _discover_offload_apps()
+    display_mux = _get_display_mux_info()
     available_settings = [s for s in settings if s["available"]]
     optimal_count = sum(1 for s in available_settings if s["is_optimal"])
     total_count = len(available_settings)
@@ -3060,6 +3131,7 @@ def get_system_tuning_status() -> dict:
         "has_backup": os.path.exists(TUNING_BACKUP_FILE),
         "power_scheme": pwr["scheme_name"],
         "display_hz": refresh_hz,
+        "display_mux": display_mux,
         "telemetry": telemetry,
         "groups": _TUNING_GROUPS,
         "settings": settings,
@@ -3179,14 +3251,37 @@ def apply_optimal_tuning_profile() -> dict:
     }
 
 
+def _is_backup_already_optimal(b: dict) -> bool:
+    """Return True if the saved tuning backup already reflects optimized settings."""
+    pwr = b.get("power") or {}
+    nv = b.get("nvidia") or {}
+    reg = b.get("registry") or {}
+    max_dc = (pwr.get("PROCTHROTTLEMAX") or {}).get("dc")
+    boost_ac = (pwr.get("PERFBOOSTMODE") or {}).get("ac")
+    nv_pm = (nv.get("0x1057eb71") or {}).get("value")
+    return (
+        max_dc == 85
+        and boost_ac == 3
+        and (nv_pm == 5 or not b.get("nvidia_available"))
+        and reg.get("GameDVR_Enabled") == 0
+    )
+
+
 def restore_tuning_defaults() -> dict:
-    """Restore original settings from tuning_backup.json (or safe Windows/NVIDIA defaults)."""
+    """Restore original settings from tuning_backup.json, or Windows/NVIDIA factory defaults if backup is missing/already optimized."""
     errors = []
+    use_backup = False
+    b = {}
 
     if os.path.exists(TUNING_BACKUP_FILE):
-        with open(TUNING_BACKUP_FILE, "r", encoding="utf-8") as f:
-            b = json.load(f)
+        try:
+            with open(TUNING_BACKUP_FILE, "r", encoding="utf-8") as f:
+                b = json.load(f)
+            use_backup = not _is_backup_already_optimal(b)
+        except Exception:
+            use_backup = False
 
+    if use_backup:
         for key in _POWER_SETTING_GUIDS:
             pair = b.get("power", {}).get(key, {})
             if pair.get("ac") is not None or pair.get("dc") is not None:
@@ -3242,26 +3337,62 @@ def restore_tuning_defaults() -> dict:
             except Exception as e:
                 errors.append(f"NVIDIA NVAPI: {e}")
     else:
-        # Safe factory defaults if no backup exists yet
+        # True Windows & NVIDIA factory defaults
         try:
             _set_powercfg_pair("PROCTHROTTLEMIN", ac=5, dc=5)
             _set_powercfg_pair("PROCTHROTTLEMAX", ac=100, dc=100)
             _set_powercfg_pair("PERFBOOSTMODE", ac=2, dc=2)
+            _set_powercfg_pair("ASPM", ac=1, dc=2)
             _set_powercfg_pair("INTEL_GFX", ac=1, dc=1)
         except Exception as e:
             errors.append(f"Power Plan: {e}")
 
+        for pk, name, val in [
+            ("game_cfg", "GameDVR_Enabled", 1),
+            ("game_dvr", "AppCaptureEnabled", 1),
+            ("personalize", "EnableTransparency", 1),
+        ]:
+            try:
+                _reg_write_dword(pk, name, val)
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+
+        for pk, name in [
+            ("uwp_bg", "GlobalUserDisabled"),
+            ("edge_policy", "BackgroundModeEnabled"),
+            ("edge_policy", "StartupBoostEnabled"),
+            ("chrome_policy", "BackgroundModeEnabled"),
+        ]:
+            try:
+                _reg_delete_value(pk, name)
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+
+        for app in _discover_offload_apps():
+            try:
+                _reg_delete_value("gpu_pref", app["path"])
+            except Exception as e:
+                errors.append(f"{app['exe_name']}: {e}")
+
+        nv_ok, _ = _read_nvdrs_raw([0x1057EB71])
+        if nv_ok:
+            try:
+                _write_nvdrs_updates({sid: None for sid in _NVIDIA_PROFILE_KEYS.values()})
+            except Exception as e:
+                errors.append(f"NVIDIA NVAPI: {e}")
+
+    if not errors and os.path.exists(TUNING_BACKUP_FILE):
         try:
-            _write_nvdrs_updates({sid: None for sid in _NVIDIA_PROFILE_KEYS.values()})
-        except Exception as e:
-            errors.append(f"NVIDIA NVAPI: {e}")
+            os.remove(TUNING_BACKUP_FILE)
+        except OSError:
+            pass
 
     return {
         "success": len(errors) == 0,
         "need_admin": bool(errors) and not is_admin(),
         "errors": errors,
         "message": (
-            "Đã khôi phục toàn bộ cấu hình về nguyên bản!"
+            "Đã khôi phục toàn bộ cấu hình về mặc định!"
             if not errors
             else "Đã khôi phục một phần (một số mục cần quyền Administrator)."
         ),

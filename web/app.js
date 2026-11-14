@@ -1657,9 +1657,14 @@ function updateTuningTelemetryCards(tele, displayHz) {
   setText('tuning-gpu-name', t.name || 'Không phát hiện NVIDIA GPU');
   const pstateEl = document.getElementById('tuning-gpu-pstate');
   if (pstateEl) {
-    pstateEl.textContent = t.available ? `P-State ${t.pstate}` : 'Offline';
+    if (t.available) {
+      const utilStr = (t.util_pct !== null && t.util_pct !== undefined) ? ` • ${Math.round(t.util_pct)}%` : '';
+      pstateEl.textContent = `P-State ${t.pstate}${utilStr}`;
+    } else {
+      pstateEl.textContent = 'Offline';
+    }
   }
-  setText('tuning-gpu-temp', t.temp_c !== null && t.temp_c !== undefined ? `${Math.round(t.temp_c)} °C` : '-- °C');
+  setText('tuning-gpu-temp', t.temp_c !== null && t.temp_c !== undefined ? `${t.temp_c.toFixed(1)} °C` : '-- °C');
   setText('tuning-gpu-power', t.power_w !== null && t.power_w !== undefined ? `${t.power_w.toFixed(1)} W` : '-- W');
   setText('tuning-gpu-clock', t.clock_mhz !== null && t.clock_mhz !== undefined ? `${Math.round(t.clock_mhz)} MHz` : '-- MHz');
   setText('tuning-display-hz', displayHz ? `${displayHz} Hz` : '-- Hz');
@@ -1691,6 +1696,13 @@ function renderTuningView(data) {
     adminBanner.style.display = data.is_admin ? 'none' : 'flex';
   }
 
+  const mux = data.display_mux || {};
+  const muxBanner = document.getElementById('tuning-mux-banner');
+  if (muxBanner) {
+    muxBanner.style.display = mux.dgpu_only_active ? 'flex' : 'none';
+  }
+  const igpuShort = mux.igpu_short || 'iGPU';
+
   const setText = (id, text) => {
     const el = document.getElementById(id);
     if (el) el.textContent = text;
@@ -1702,7 +1714,8 @@ function renderTuningView(data) {
   setText('tuning-score-pct', `${summary.score_pct ?? 0}%`);
   setText('tuning-score-badge', `${summary.optimal_count ?? 0} / ${summary.total_count ?? 0} tối ưu`);
   setText('tuning-offload-count', `${summary.offload_enabled_count ?? 0}/${summary.offload_total_count ?? 0} app`);
-  setText('tuning-offload-badge', `${summary.offload_enabled_count ?? 0} / ${summary.offload_total_count ?? 0} dùng iGPU`);
+  setText('tuning-offload-badge', `${summary.offload_enabled_count ?? 0} / ${summary.offload_total_count ?? 0} dùng ${igpuShort}`);
+  setText('tuning-offload-title', `Ép App Nhẹ Dùng ${igpuShort} (Giữ Card Rời Ngủ Đông Mát)`);
 
   const groupsContainer = document.getElementById('tuning-groups-container');
   if (groupsContainer) {
@@ -1799,7 +1812,7 @@ function renderTuningView(data) {
         <div class="tuning-offload-card" title="${escapeHtml(app.path)}">
           <div class="tuning-offload-meta">
             <div class="tuning-offload-name">${escapeHtml(app.name)}</div>
-            <div class="tuning-offload-sub">${app.is_igpu ? 'Intel iGPU (Power Saving)' : 'Mặc định Windows'} • ${escapeHtml(app.exe_name)}</div>
+            <div class="tuning-offload-sub">${app.is_igpu ? `${escapeHtml(igpuShort)} (Power Saving)` : 'Mặc định Windows'} • ${escapeHtml(app.exe_name)}</div>
           </div>
           <label class="switch">
             <input type="checkbox" class="tuning-offload-toggle" data-app-path="${escapeHtml(app.path)}" ${app.is_igpu ? 'checked' : ''}>

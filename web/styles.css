@@ -1782,6 +1782,12 @@ input:checked + .slider-toggle:before {
   font-size: 0.84rem;
 }
 
+.tuning-mux-banner {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #fecaca;
+}
+
 .tuning-telemetry-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

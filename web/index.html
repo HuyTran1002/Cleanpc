@@ -614,6 +614,12 @@
           <button class="btn btn-warning btn-sm" id="btn-tuning-elevate">Nâng quyền Admin</button>
         </div>
 
+        <div id="tuning-mux-banner" class="tuning-admin-banner tuning-mux-banner" style="display:none;">
+          <div>
+            <strong>Đang khóa màn hình ở chế độ NVIDIA GPU only:</strong> Windows đang xuất hình trực tiếp qua card rời nên các app nhẹ vẫn bám GPU NVIDIA. Hãy mở <strong>NVIDIA Control Panel → Manage Display mode</strong> và chọn <strong>Automatic Select</strong> hoặc <strong>Optimus</strong> để tính năng ép iGPU hoạt động.
+          </div>
+        </div>
+
         <div class="tuning-telemetry-grid">
           <div class="card tuning-telemetry-card">
             <div class="tuning-tele-top">
@@ -649,8 +655,8 @@
         <div class="card tuning-group-card" style="margin-top:14px;">
           <div class="tuning-group-head">
             <div>
-              <h4>Ép App Nhẹ Dùng Intel iGPU (Giữ Card Rời Ngủ Đông Mát)</h4>
-              <p>Chuyển trình duyệt, Discord, IDE và WebView2 sang GPU tích hợp để card NVIDIA không bị đánh thức khi làm việc nhẹ</p>
+              <h4 id="tuning-offload-title">Ép App Nhẹ Dùng iGPU Tiết Kiệm Điện (Giữ Card Rời Ngủ Đông Mát)</h4>
+              <p>Chuyển trình duyệt, Discord, IDE và WebView2 sang GPU tích hợp để card rời không bị đánh thức khi làm việc nhẹ</p>
             </div>
             <span class="badge" id="tuning-offload-badge" style="background:rgba(6,182,212,0.12);color:var(--primary);">0 app</span>
           </div>
