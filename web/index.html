@@ -69,6 +69,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         <span class="nav-label">Sức Khỏe & Tối Ưu Ổ Cứng</span>
       </div>
+      <div class="nav-item" data-tab="tab-tuning" title="Hiệu Năng, GPU & Nhiệt Độ">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+        <span class="nav-label">Hiệu Năng & Nhiệt Độ</span>
+      </div>
 
       <div class="sidebar-spacer"></div>
 
@@ -256,14 +260,14 @@
         </div>
 
         <!-- Quick Path Shortcuts -->
-        <div style="display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap;">
-          <span style="font-size: 0.8rem; color: var(--text-dim); align-self: center;">Chọn nhanh:</span>
+        <div class="quick-paths-bar">
+          <span class="quick-paths-label">Chọn nhanh:</span>
           <button class="btn btn-sm btn-primary quick-path-btn" data-path="C:\, D:\" style="font-weight: 700;">✨ Cả 2 Ổ (C:\ & D:\)</button>
           <button class="btn btn-sm btn-outline quick-path-btn" data-path="C:\">Ổ C:\</button>
           <button class="btn btn-sm btn-outline quick-path-btn" data-path="D:\">Ổ D:\</button>
-          <button class="btn btn-sm btn-outline quick-path-btn" data-path="C:\Users\HuyBlink\Downloads">Thư mục Downloads</button>
-          <button class="btn btn-sm btn-outline quick-path-btn" data-path="C:\Users\HuyBlink\Desktop">Màn hình Desktop</button>
-          <button class="btn btn-sm btn-outline quick-path-btn" data-path="C:\Users\HuyBlink\Documents">Tài liệu Documents</button>
+          <button class="btn btn-sm btn-outline quick-path-btn" data-path="%USERPROFILE%\Downloads">Downloads</button>
+          <button class="btn btn-sm btn-outline quick-path-btn" data-path="%USERPROFILE%\Desktop">Desktop</button>
+          <button class="btn btn-sm btn-outline quick-path-btn" data-path="%USERPROFILE%\Documents">Documents</button>
         </div>
 
         <!-- Progress Box (Hidden when idle) -->
@@ -356,13 +360,14 @@
         </div>
 
         <!-- Quick Path Shortcuts for Large Files -->
-        <div style="display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap;">
-          <span style="font-size: 0.8rem; color: var(--text-dim); align-self: center;">Chọn nhanh:</span>
+        <div class="quick-paths-bar">
+          <span class="quick-paths-label">Chọn nhanh:</span>
+          <button class="btn btn-sm btn-primary quick-large-path-btn" data-path="C:\, D:\" style="font-weight: 700;">✨ Cả 2 Ổ (C:\ & D:\)</button>
           <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="D:\">Ổ D:\</button>
           <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="C:\">Ổ C:\</button>
-          <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="C:\Users\HuyBlink\Downloads">Thư mục Downloads</button>
-          <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="C:\Users\HuyBlink\Desktop">Màn hình Desktop</button>
-          <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="C:\Users\HuyBlink\Videos">Thư mục Videos</button>
+          <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="%USERPROFILE%\Downloads">Downloads</button>
+          <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="%USERPROFILE%\Desktop">Desktop</button>
+          <button class="btn btn-sm btn-outline quick-large-path-btn" data-path="%USERPROFILE%\Videos">Videos</button>
         </div>
 
         <!-- Large Files Table Container -->
@@ -580,6 +585,79 @@
         </div>
       </section>
 
+      <!-- ================= TAB 7: PERFORMANCE, GPU & COOLING TUNER ================= -->
+      <section id="tab-tuning" class="tab-pane">
+        <div class="section-header tuning-header-row">
+          <div>
+            <h2>Hiệu Năng, NVIDIA GPU &amp; Nhiệt Độ</h2>
+            <p>Điều khiển trực tiếp NVIDIA Driver (NVAPI), Power Plan &amp; Windows để chơi game mượt mà vẫn mát máy</p>
+          </div>
+          <div class="tuning-header-actions">
+            <button class="btn btn-secondary btn-sm" id="btn-tuning-refresh" title="Đọc lại trạng thái thực tế">
+              <svg style="width:15px;height:15px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              <span>Làm mới</span>
+            </button>
+            <button class="btn btn-secondary btn-sm" id="btn-tuning-restore" title="Khôi phục lại thiết lập ban đầu">
+              <span>Khôi phục mặc định</span>
+            </button>
+            <button class="btn btn-primary btn-sm" id="btn-tuning-optimize-all">
+              <svg style="width:15px;height:15px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              <span>Tối Ưu Toàn Bộ (Mượt &amp; Mát)</span>
+            </button>
+          </div>
+        </div>
+
+        <div id="tuning-admin-banner" class="tuning-admin-banner" style="display:none;">
+          <div>
+            <strong>Đang chạy ở chế độ User thường:</strong> Một số cài đặt hệ thống (NVIDIA Profile, Power Plan, HAGS, Browser Policy) cần quyền <strong>Administrator</strong> để lưu.
+          </div>
+          <button class="btn btn-warning btn-sm" id="btn-tuning-elevate">Nâng quyền Admin</button>
+        </div>
+
+        <div class="tuning-telemetry-grid">
+          <div class="card tuning-telemetry-card">
+            <div class="tuning-tele-top">
+              <span class="tuning-tele-kicker">NVIDIA GPU TRỰC TIẾP</span>
+              <span class="badge" id="tuning-gpu-pstate" style="background:rgba(16,185,129,0.15);color:var(--success);">P--</span>
+            </div>
+            <div class="tuning-tele-title" id="tuning-gpu-name">Đang đọc thông số GPU...</div>
+            <div class="tuning-tele-metrics">
+              <div class="tuning-metric-pill"><span>Nhiệt độ</span><strong id="tuning-gpu-temp">-- °C</strong></div>
+              <div class="tuning-metric-pill"><span>Công suất</span><strong id="tuning-gpu-power">-- W</strong></div>
+              <div class="tuning-metric-pill"><span>Xung nhịp</span><strong id="tuning-gpu-clock">-- MHz</strong></div>
+            </div>
+          </div>
+
+          <div class="card tuning-telemetry-card">
+            <div class="tuning-tele-top">
+              <span class="tuning-tele-kicker">NGUỒN ĐIỆN &amp; TRẠNG THÁI TỐI ƯU</span>
+              <span class="badge" id="tuning-score-badge" style="background:rgba(6,182,212,0.15);color:var(--primary);">0 / 0 tối ưu</span>
+            </div>
+            <div class="tuning-tele-title" id="tuning-power-scheme">Power Plan: Balanced</div>
+            <div class="tuning-tele-metrics">
+              <div class="tuning-metric-pill"><span>Màn hình</span><strong id="tuning-display-hz">-- Hz</strong></div>
+              <div class="tuning-metric-pill"><span>Đã tối ưu</span><strong id="tuning-score-pct">0%</strong></div>
+              <div class="tuning-metric-pill"><span>Ép iGPU</span><strong id="tuning-offload-count">0 app</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="tuning-groups-container" class="tuning-groups-container">
+          <div class="card" style="text-align:center;color:var(--text-muted);padding:24px;">Đang quét thiết lập hệ thống &amp; NVIDIA NVAPI...</div>
+        </div>
+
+        <div class="card tuning-group-card" style="margin-top:14px;">
+          <div class="tuning-group-head">
+            <div>
+              <h4>Ép App Nhẹ Dùng Intel iGPU (Giữ Card Rời Ngủ Đông Mát)</h4>
+              <p>Chuyển trình duyệt, Discord, IDE và WebView2 sang GPU tích hợp để card NVIDIA không bị đánh thức khi làm việc nhẹ</p>
+            </div>
+            <span class="badge" id="tuning-offload-badge" style="background:rgba(6,182,212,0.12);color:var(--primary);">0 app</span>
+          </div>
+          <div id="tuning-offload-apps-container" class="tuning-offload-grid"></div>
+        </div>
+      </section>
+
     </main>
   </div>
 
@@ -619,59 +697,72 @@ window.onunhandledrejection = function(e) {
   console.warn('[CleanPC Unhandled Promise]:', e.reason);
 };
 
-// Native Desktop API Shim: If running inside pywebview desktop app,
-// intercept fetch() calls and route directly to window.pywebview.api!
+// Native Desktop API Shim:
+// When served via http://127.0.0.1 (ThreadedHTTPServer), use normal HTTP fetch()
+// so heavy scans/cleans run in pure Python server threads without blocking WinForms/pywebview UI.
+// Only fall back to window.pywebview.api when loaded via file:// or for native file dialogs.
 (function() {
   const originalFetch = window.fetch;
   window.fetch = async function(url, options = {}) {
     if (window.pywebview && window.pywebview.api) {
-      const api = window.pywebview.api;
-      let body = {};
-      if (options.body) {
-        try { body = typeof options.body === 'string' ? JSON.parse(options.body) : options.body; } catch(e) {}
-      }
+      const isFileProtocol = window.location.protocol === 'file:';
+      if (isFileProtocol || url === '/api/system/choose_folder') {
+        const api = window.pywebview.api;
+        let body = {};
+        if (options.body) {
+          try { body = typeof options.body === 'string' ? JSON.parse(options.body) : options.body; } catch(e) {}
+        }
 
-      let result = null;
-      if (url === '/api/system/overview') result = await api.get_system_overview();
-      else if (url === '/api/memory/status') result = await api.get_memory_status();
-      else if (url === '/api/memory/clean') result = await api.clean_memory(body?.purge_standby, body?.empty_working_sets, body?.flush_modified, body?.skip_foreground);
-      else if (url === '/api/memory/daemon_config' && options.method === 'POST') result = await api.set_memory_daemon_config(body?.enabled, body?.threshold_pct, body?.cooldown_sec, body?.pause_in_game, body?.purge_standby, body?.empty_working_sets, body?.flush_modified, body?.skip_foreground);
-      else if (url === '/api/memory/daemon_config') result = await api.get_memory_daemon_config();
-      else if (url === '/api/autostart' && options.method === 'POST') result = await api.set_autostart(body?.enabled);
-      else if (url === '/api/autostart') result = await api.get_autostart_status();
-      else if (url === '/api/settings' && options.method === 'POST') result = await api.save_settings(body);
-      else if (url === '/api/settings') result = await api.get_settings();
-      else if (url === '/api/disks/smart') result = await api.get_disks_smart(body?.force_refresh);
-      else if (url === '/api/junk/categories') result = await api.get_junk_categories();
-      else if (url === '/api/junk/scan') result = await api.scan_junk();
-      else if (url === '/api/junk/clean') result = await api.clean_junk(body.category_ids, body.use_recycle_bin);
-      else if (url === '/api/junk/close_temp_lockers') result = await api.close_temp_blocking_processes();
-      else if (url === '/api/recycle_bin/empty') result = await api.empty_recycle_bin(body?.drive);
-      else if (url === '/api/duplicates/start') result = await api.start_duplicate_scan(body.targets, body.min_size_mb, body.file_types);
-      else if (url === '/api/duplicates/status') result = await api.get_duplicate_status();
-      else if (url === '/api/duplicates/results') result = await api.get_duplicate_results();
-      else if (url === '/api/duplicates/cancel') result = await api.cancel_duplicate_scan();
-      else if (url === '/api/duplicates/delete') result = await api.delete_duplicates(body.paths, body.use_recycle_bin);
-      else if (url === '/api/large_files/scan') result = await api.scan_large_files(body.target_dir, body.min_size_mb, body.limit);
-      else if (url === '/api/optimize/trim') result = await api.optimize_trim(body.drive);
-      else if (url === '/api/system/open_explorer') result = await api.open_explorer(body.path);
-      else if (url === '/api/system/choose_folder') result = await api.choose_folder();
-      else if (url === '/api/system/restart_admin') result = await api.restart_admin();
-      else if (url === '/api/system/shutdown') { window.close(); result = { success: true }; }
+        let result = null;
+        if (url === '/api/system/choose_folder') result = await api.choose_folder();
+        else if (url === '/api/system/overview') result = await api.get_system_overview();
+        else if (url === '/api/memory/status') result = await api.get_memory_status();
+        else if (url === '/api/memory/clean') result = await api.clean_memory(body?.purge_standby, body?.empty_working_sets, body?.flush_modified, body?.skip_foreground);
+        else if (url === '/api/memory/daemon_config' && options.method === 'POST') result = await api.set_memory_daemon_config(body?.enabled, body?.threshold_pct, body?.cooldown_sec, body?.pause_in_game, body?.purge_standby, body?.empty_working_sets, body?.flush_modified, body?.skip_foreground);
+        else if (url === '/api/memory/daemon_config') result = await api.get_memory_daemon_config();
+        else if (url === '/api/autostart' && options.method === 'POST') result = await api.set_autostart(body?.enabled);
+        else if (url === '/api/autostart') result = await api.get_autostart_status();
+        else if (url === '/api/settings' && options.method === 'POST') result = await api.save_settings(body);
+        else if (url === '/api/settings') result = await api.get_settings();
+        else if (url === '/api/disks/smart') result = await api.get_disks_smart(body?.force_refresh);
+        else if (url === '/api/junk/categories') result = await api.get_junk_categories();
+        else if (url === '/api/junk/scan') result = await api.scan_junk();
+        else if (url === '/api/junk/clean') result = await api.clean_junk(body.category_ids, body.use_recycle_bin);
+        else if (url === '/api/junk/close_temp_lockers') result = await api.close_temp_blocking_processes();
+        else if (url === '/api/recycle_bin/empty') result = await api.empty_recycle_bin(body?.drive);
+        else if (url === '/api/duplicates/start') result = await api.start_duplicate_scan(body.targets, body.min_size_mb, body.file_types);
+        else if (url === '/api/duplicates/status') result = await api.get_duplicate_status();
+        else if (url === '/api/duplicates/results') result = await api.get_duplicate_results();
+        else if (url === '/api/duplicates/cancel') result = await api.cancel_duplicate_scan();
+        else if (url === '/api/duplicates/delete') result = await api.delete_duplicates(body.paths, body.use_recycle_bin);
+        else if (url === '/api/large_files/scan') result = await api.scan_large_files(body.target_dir, body.min_size_mb, body.limit);
+        else if (url === '/api/large_files/delete') result = await api.delete_duplicates(body.paths, body.use_recycle_bin);
+        else if (url === '/api/optimize/trim') result = await api.optimize_trim(body.drive);
+        else if (url === '/api/tuning/status') result = await api.get_tuning_status();
+        else if (url === '/api/tuning/telemetry') result = await api.get_tuning_telemetry();
+        else if (url === '/api/tuning/apply') result = await api.apply_tuning_setting(body.id, body.value);
+        else if (url === '/api/tuning/toggle_app') result = await api.toggle_tuning_app(body.path, body.enabled);
+        else if (url === '/api/tuning/optimize_all') result = await api.optimize_all_tuning();
+        else if (url === '/api/tuning/restore') result = await api.restore_tuning_defaults();
+        else if (url === '/api/system/open_explorer') result = await api.open_explorer(body.path);
+        else if (url === '/api/system/restart_admin') result = await api.restart_admin();
+        else if (url === '/api/app/minimize') result = await api.minimize_to_tray();
+        else if (url === '/api/app/exit' || url === '/api/system/shutdown') result = await api.exit_app();
 
-      if (result !== null) {
-        return {
-          ok: !result.error,
-          status: result.error ? 500 : 200,
-          json: async () => result,
-          text: async () => JSON.stringify(result)
-        };
+        if (result !== null) {
+          return {
+            ok: !result.error,
+            status: result.error ? 500 : 200,
+            json: async () => result,
+            text: async () => JSON.stringify(result)
+          };
+        }
       }
     }
     return originalFetch(url, options);
   };
 })();
 </script>
-<script src="app.js?v=7"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>

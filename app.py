@@ -111,6 +111,10 @@ class CleanPCHandler(SimpleHTTPRequestHandler):
             self._send_json(cleaner_core.duplicate_scanner.get_status())
         elif path == "/api/duplicates/results":
             self._send_json({"groups": cleaner_core.duplicate_scanner.get_results()})
+        elif path == "/api/tuning/status":
+            self._send_json(cleaner_core.get_system_tuning_status())
+        elif path == "/api/tuning/telemetry":
+            self._send_json(cleaner_core.get_tuning_telemetry())
         elif path.startswith("/api/"):
             self._send_json({"error": "Endpoint not found"}, 404)
         else:
@@ -123,8 +127,10 @@ class CleanPCHandler(SimpleHTTPRequestHandler):
             clean_path = clean_path.split("?")[0].split("#")[0]
             safe_path = os.path.normpath(os.path.join(WEB_DIR, clean_path))
 
-            # Security check: ensure path is inside WEB_DIR and exists
-            if safe_path.startswith(os.path.abspath(WEB_DIR)) and os.path.isfile(safe_path):
+            # Security check: ensure path is strictly inside WEB_DIR and exists
+            web_root = os.path.abspath(WEB_DIR)
+            abs_safe = os.path.abspath(safe_path)
+            if os.path.commonpath([web_root, abs_safe]) == web_root and os.path.isfile(abs_safe):
                 import mimetypes
                 content_type, _ = mimetypes.guess_type(safe_path)
                 if not content_type:
@@ -283,33 +289,26 @@ class CleanPCHandler(SimpleHTTPRequestHandler):
         elif path == "/api/large_files/delete":
             paths = body.get("paths", [])
             use_recycle_bin = body.get("use_recycle_bin", True)
-            
-            deleted = 0
-            freed = 0
-            for p in paths:
-                if os.path.exists(p):
-                    try:
-                        sz = os.path.getsize(p)
-                        if use_recycle_bin:
-                            ok = cleaner_core.send_to_recycle_bin(p)
-                        else:
-                            ok = cleaner_core.permanent_delete(p)
-                        if ok:
-                            deleted += 1
-                            freed += sz
-                    except Exception:
-                        pass
-            self._send_json({
-                "success": True,
-                "deleted_count": deleted,
-                "freed_bytes": freed,
-                "freed_formatted": cleaner_core.format_bytes(freed)
-            })
+            self._send_json(cleaner_core.delete_files(paths, use_recycle_bin))
 
         # 5. Drive Optimization
         elif path == "/api/optimize/trim":
             drive = body.get("drive", "C")
             res = cleaner_core.optimize_drive_trim(drive)
+            self._send_json(res)
+
+        # 5b. Performance, NVIDIA GPU & Cooling Tuning
+        elif path == "/api/tuning/apply":
+            res = cleaner_core.apply_system_tuning_setting(body.get("id", ""), body.get("value"))
+            self._send_json(res)
+        elif path == "/api/tuning/toggle_app":
+            res = cleaner_core.toggle_igpu_offload_app(body.get("path", ""), bool(body.get("enabled")))
+            self._send_json(res)
+        elif path == "/api/tuning/optimize_all":
+            res = cleaner_core.apply_optimal_tuning_profile()
+            self._send_json(res)
+        elif path == "/api/tuning/restore":
+            res = cleaner_core.restore_tuning_defaults()
             self._send_json(res)
 
         # 6. Windows Explorer Highlight & Folder Picker
@@ -336,34 +335,44 @@ class CleanPCHandler(SimpleHTTPRequestHandler):
         elif path == "/api/system/restart_admin":
             try:
                 import ctypes
-                run_py_path = os.path.join(BASE_DIR, "run.py")
-                ctypes.windll.shell32.ShellExecuteW(
-                    None,
-                    "runas",
-                    sys.executable,
-                    f'"{run_py_path}"',
-                    BASE_DIR,
-                    1
+                is_frozen = getattr(sys, "frozen", False)
+                launch_params = "" if is_frozen else f'"{os.path.join(BASE_DIR, "run.py")}"'
+                work_dir = os.path.dirname(sys.executable) if is_frozen else BASE_DIR
+                ret = ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", sys.executable, launch_params, work_dir, 1
                 )
+                if ret <= 32:
+                    raise RuntimeError(f"UAC ShellExecuteW failed with code {ret}")
                 self._send_json({"success": True, "message": "Đang khởi động lại CleanPC với quyền Administrator..."})
-                threading.Thread(target=lambda: (time.sleep(1.0), os._exit(0))).start()
+                desktop_mod = sys.modules.get("desktop")
+                if desktop_mod and hasattr(desktop_mod, "force_quit_application"):
+                    threading.Thread(target=lambda: (time.sleep(0.6), desktop_mod.force_quit_application()), daemon=True).start()
+                else:
+                    threading.Thread(target=lambda: (time.sleep(0.6), os._exit(0)), daemon=True).start()
             except Exception as e:
                 self._send_json({"success": False, "error": str(e)})
 
         # 8. Server Shutdown & Window Control
         elif path == "/api/app/minimize":
-            try:
-                import webview
-                if webview.windows:
-                    webview.windows[0].hide()
-            except Exception:
-                pass
+            desktop_mod = sys.modules.get("desktop")
+            if desktop_mod and hasattr(desktop_mod, "hide_main_window"):
+                desktop_mod.hide_main_window()
+            else:
+                try:
+                    import webview
+                    if webview.windows:
+                        webview.windows[0].hide()
+                except Exception:
+                    pass
             self._send_json({"success": True, "message": "Đã thu nhỏ xuống khay hệ thống"})
 
         elif path == "/api/app/exit" or path == "/api/system/shutdown":
             self._send_json({"success": True, "message": "Đang dừng CleanPC Master..."})
-            import threading
-            threading.Thread(target=lambda: (time.sleep(0.5), os._exit(0))).start()
+            desktop_mod = sys.modules.get("desktop")
+            if desktop_mod and hasattr(desktop_mod, "force_quit_application"):
+                threading.Thread(target=lambda: (time.sleep(0.25), desktop_mod.force_quit_application()), daemon=True).start()
+            else:
+                threading.Thread(target=lambda: (time.sleep(0.5), os._exit(0)), daemon=True).start()
 
         else:
             self._send_json({"error": "Endpoint not found"}, 404)

@@ -102,10 +102,26 @@ def format_bytes(bytes_num: int) -> str:
         bytes_num /= 1024.0
     return f"{bytes_num:.2f} B"
 
+def _co_init_sta():
+    """Initialize COM STA on the current worker thread for Shell APIs."""
+    try:
+        hr = ctypes.windll.ole32.CoInitializeEx(None, 0x2)
+        return hr in (0, 1)
+    except Exception:
+        return False
+
+def _co_uninit(need_uninit: bool):
+    if need_uninit:
+        try:
+            ctypes.windll.ole32.CoUninitialize()
+        except Exception:
+            pass
+
 def send_to_recycle_bin(path: str) -> bool:
     """Send a file or folder to the Windows Recycle Bin."""
     if not os.path.exists(path):
         return True
+    need_uninit = _co_init_sta()
     try:
         shfs = SHFILEOPSTRUCT()
         shfs.hwnd = None
@@ -120,12 +136,15 @@ def send_to_recycle_bin(path: str) -> bool:
     except Exception as e:
         print(f"[Error] send_to_recycle_bin for {path}: {e}")
         return False
+    finally:
+        _co_uninit(need_uninit)
 
 def send_to_recycle_bin_batch(paths: list) -> bool:
     """Send multiple files/folders to the Windows Recycle Bin in a single Shell call."""
     abs_paths = [os.path.abspath(p) for p in paths if os.path.exists(p)]
     if not abs_paths:
         return True
+    need_uninit = _co_init_sta()
     try:
         joined = '\0'.join(abs_paths) + '\0\0'
         buf = ctypes.create_unicode_buffer(joined)
@@ -140,6 +159,8 @@ def send_to_recycle_bin_batch(paths: list) -> bool:
     except Exception as e:
         print(f"[Error] send_to_recycle_bin_batch ({len(abs_paths)} items): {e}")
         return False
+    finally:
+        _co_uninit(need_uninit)
 
 def permanent_delete(path: str) -> bool:
     """Permanently delete a file or directory, handling read-only permissions on Windows."""
@@ -893,6 +914,22 @@ def close_temp_blocking_processes() -> dict:
 # Multi-Stage Fast Duplicate File Finder
 # -----------------------------------------------------------------------------
 
+def _parse_target_paths(raw_targets) -> list:
+    """Split comma/semicolon target strings, expand env vars, deduplicate, and keep existing paths."""
+    items = [raw_targets] if isinstance(raw_targets, str) else list(raw_targets or [])
+    parsed = []
+    seen = set()
+    for item in items:
+        for part in re.split(r'[,;]+', str(item)):
+            p = os.path.expandvars(part.strip())
+            if p and os.path.exists(p):
+                ap = os.path.abspath(p)
+                key = os.path.normcase(ap)
+                if key not in seen:
+                    seen.add(key)
+                    parsed.append(ap)
+    return parsed
+
 class DuplicateFinderTask:
     def __init__(self):
         self.lock = threading.Lock()
@@ -1026,6 +1063,10 @@ class DuplicateFinderTask:
 
     def _run_scan_thread(self, target_dirs: list, min_size_bytes: int, file_types: list):
         try:
+            normalized_types = (
+                {str(t).strip().lower().lstrip('.') for t in file_types if str(t).strip()}
+                if file_types else None
+            )
             # Stage 1: Walk directories & gather files >= min_size_bytes
             files_by_size = {} # size -> [file_path, ...]
             scanned_count = 0
@@ -1039,7 +1080,17 @@ class DuplicateFinderTask:
                 '.gradle', '.nuget', '.vscode-shared', '.gemini', '.android'
             }
 
-            stack = [os.path.abspath(d) for d in target_dirs if os.path.exists(d)]
+            parsed_targets = _parse_target_paths(target_dirs)
+
+            if not parsed_targets:
+                with self.lock:
+                    self.results = []
+                    self.status = "error"
+                    self.is_running = False
+                    self.error_message = "Không tìm thấy thư mục hoặc ổ đĩa hợp lệ để quét."
+                return
+
+            stack = parsed_targets
             while stack:
                 if self.should_cancel:
                     break
@@ -1065,12 +1116,12 @@ class DuplicateFinderTask:
                                         continue
                                     stack.append(entry.path)
                                 elif entry.is_file(follow_symlinks=False):
-                                    if file_types:
+                                    if normalized_types:
                                         ext = os.path.splitext(entry.name)[1].lower().lstrip('.')
-                                        if ext not in file_types:
+                                        if ext not in normalized_types:
                                             continue
                                     sz = st.st_size
-                                    if sz >= min_size_bytes:
+                                    if sz > 0 and sz >= min_size_bytes:
                                         files_by_size.setdefault(sz, []).append((entry.path, st.st_mtime))
                             except (PermissionError, OSError):
                                 continue
@@ -1253,10 +1304,12 @@ duplicate_scanner = DuplicateFinderTask()
 # -----------------------------------------------------------------------------
 
 def scan_large_files(target_dir: str, min_size_bytes: int = 104857600, limit: int = 100) -> dict:
-    """Find top N largest files in target directory/drive using ultra-fast os.scandir (default >= 100MB)."""
-    if not os.path.exists(target_dir):
+    """Find top N largest files in target directory/drive(s) using ultra-fast os.scandir (default >= 100MB)."""
+    stack = _parse_target_paths(target_dir)
+
+    if not stack:
         return {"error": f"Đường dẫn {target_dir} không tồn tại", "files": []}
-        
+
     found_files = []
     scanned_count = 0
     FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
@@ -1264,8 +1317,8 @@ def scan_large_files(target_dir: str, min_size_bytes: int = 104857600, limit: in
         '$recycle.bin', 'system volume information', 'windows',
         'recovery', '$winreagent', '$windows.~bt', '$windows.~ws'
     }
+    skip_system_files = {'pagefile.sys', 'hiberfil.sys', 'swapfile.sys', 'dumpstack.log.tmp'}
 
-    stack = [os.path.abspath(target_dir)]
     try:
         while stack:
             curr = stack.pop()
@@ -1284,10 +1337,12 @@ def scan_large_files(target_dir: str, min_size_bytes: int = 104857600, limit: in
                                     continue
                                 stack.append(entry.path)
                             elif entry.is_file(follow_symlinks=False):
+                                if entry.name.lower() in skip_system_files:
+                                    continue
                                 sz = st.st_size
                                 if sz >= min_size_bytes:
                                     ext = os.path.splitext(entry.name)[1].lower().lstrip('.')
-                                    mt = entry.stat(follow_symlinks=False).st_mtime
+                                    mt = st.st_mtime
                                     found_files.append({
                                         "path": entry.path,
                                         "name": entry.name,
@@ -2123,5 +2178,1095 @@ class MemoryAutoCleanDaemon:
 
 # Global memory daemon
 memory_daemon = MemoryAutoCleanDaemon()
+
+
+# ==============================================================================
+# MODULE 8: PERFORMANCE, GPU (NVIDIA NVAPI) & COOLING OPTIMIZER
+# ==============================================================================
+
+TUNING_BACKUP_FILE = os.path.join(CONFIG_DIR, "tuning_backup.json")
+
+_NVAPI_INITIALIZE = 0x0150E828
+_NVAPI_UNLOAD = 0xD22BDD7E
+_NVAPI_DRS_CREATE_SESSION = 0x0694D52E
+_NVAPI_DRS_DESTROY_SESSION = 0xDAD9CFF8
+_NVAPI_DRS_LOAD_SETTINGS = 0x375DBD6B
+_NVAPI_DRS_SAVE_SETTINGS = 0xFCBC7E14
+_NVAPI_DRS_GET_BASE_PROFILE = 0xDA8466A0
+_NVAPI_DRS_GET_SETTING = 0x73BF8338
+_NVAPI_DRS_SET_SETTING = 0x577DD202
+_NVAPI_DRS_DELETE_PROFILE_SETTING = 0xE4A26362
+_NVAPI_SETTING_NOT_FOUND = -160
+
+
+class _NVDRS_BINARY_SETTING(ctypes.Structure):
+    _fields_ = [
+        ("valueLength", ctypes.c_uint32),
+        ("valueData", ctypes.c_uint8 * 4096),
+    ]
+
+
+class _NVDRS_VALUE_UNION(ctypes.Union):
+    _fields_ = [
+        ("dwordValue", ctypes.c_uint32),
+        ("binaryValue", _NVDRS_BINARY_SETTING),
+        ("wszValue", ctypes.c_wchar * 2048),
+    ]
+
+
+class _NVDRS_SETTING(ctypes.Structure):
+    _fields_ = [
+        ("version", ctypes.c_uint32),
+        ("settingName", ctypes.c_wchar * 2048),
+        ("settingId", ctypes.c_uint32),
+        ("settingType", ctypes.c_int),
+        ("settingLocation", ctypes.c_int),
+        ("isCurrentPredefined", ctypes.c_uint32),
+        ("isPredefinedValid", ctypes.c_uint32),
+        ("predefinedValue", _NVDRS_VALUE_UNION),
+        ("currentValue", _NVDRS_VALUE_UNION),
+    ]
+
+
+_NVDRS_SETTING_VER = (1 << 16) | ctypes.sizeof(_NVDRS_SETTING)
+
+
+class NvDrsClient:
+    """Thin ctypes wrapper for NVIDIA nvapi64.dll Driver Settings (DRS) API."""
+
+    def __init__(self):
+        self.nvapi = ctypes.WinDLL("nvapi64.dll")
+        self.qi = self.nvapi.nvapi_QueryInterface
+        self.qi.restype = ctypes.c_void_p
+        self.qi.argtypes = [ctypes.c_uint32]
+
+        self._init = self._fn(_NVAPI_INITIALIZE, ctypes.c_int, [])
+        self._unload = self._fn(_NVAPI_UNLOAD, ctypes.c_int, [])
+        self._create_session = self._fn(_NVAPI_DRS_CREATE_SESSION, ctypes.c_int, [ctypes.POINTER(ctypes.c_void_p)])
+        self._destroy_session = self._fn(_NVAPI_DRS_DESTROY_SESSION, ctypes.c_int, [ctypes.c_void_p])
+        self._load_settings = self._fn(_NVAPI_DRS_LOAD_SETTINGS, ctypes.c_int, [ctypes.c_void_p])
+        self._save_settings = self._fn(_NVAPI_DRS_SAVE_SETTINGS, ctypes.c_int, [ctypes.c_void_p])
+        self._get_base_profile = self._fn(_NVAPI_DRS_GET_BASE_PROFILE, ctypes.c_int, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)])
+        self._get_setting = self._fn(_NVAPI_DRS_GET_SETTING, ctypes.c_int, [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(_NVDRS_SETTING)])
+        self._set_setting = self._fn(_NVAPI_DRS_SET_SETTING, ctypes.c_int, [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(_NVDRS_SETTING)])
+        self._del_setting = self._fn(_NVAPI_DRS_DELETE_PROFILE_SETTING, ctypes.c_int, [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32])
+        self.session = ctypes.c_void_p()
+        self.profile = ctypes.c_void_p()
+
+    def _fn(self, fid: int, restype, argtypes):
+        addr = self.qi(fid)
+        if not addr:
+            raise RuntimeError(f"NVAPI function {hex(fid)} not found")
+        return ctypes.CFUNCTYPE(restype, *argtypes)(addr)
+
+    def __enter__(self):
+        if self._init() != 0:
+            raise RuntimeError("NvAPI_Initialize failed")
+        if self._create_session(ctypes.byref(self.session)) != 0:
+            raise RuntimeError("NvAPI_DRS_CreateSession failed")
+        if self._load_settings(self.session) != 0:
+            raise RuntimeError("NvAPI_DRS_LoadSettings failed")
+        if self._get_base_profile(self.session, ctypes.byref(self.profile)) != 0:
+            raise RuntimeError("NvAPI_DRS_GetBaseProfile failed")
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.session:
+            self._destroy_session(self.session)
+        try:
+            self._unload()
+        except Exception:
+            pass
+
+    def get_dword(self, sid: int):
+        s = _NVDRS_SETTING()
+        s.version = _NVDRS_SETTING_VER
+        rc = self._get_setting(self.session, self.profile, sid, ctypes.byref(s))
+        if rc == _NVAPI_SETTING_NOT_FOUND:
+            return None
+        if rc != 0:
+            raise RuntimeError(f"NvAPI_DRS_GetSetting({hex(sid)}) failed: {rc}")
+        return {"value": int(s.currentValue.dwordValue), "location": int(s.settingLocation)}
+
+    def set_dword(self, sid: int, value: int):
+        s = _NVDRS_SETTING()
+        s.version = _NVDRS_SETTING_VER
+        s.settingId = sid
+        s.settingType = 0
+        s.settingLocation = 0
+        s.currentValue.dwordValue = int(value)
+        rc = self._set_setting(self.session, self.profile, ctypes.byref(s))
+        if rc != 0:
+            raise RuntimeError(f"NvAPI_DRS_SetSetting({hex(sid)}, {value}) failed: {rc}")
+
+    def delete_setting(self, sid: int):
+        rc = self._del_setting(self.session, self.profile, sid)
+        if rc not in (0, _NVAPI_SETTING_NOT_FOUND):
+            raise RuntimeError(f"NvAPI_DRS_DeleteProfileSetting({hex(sid)}) failed: {rc}")
+
+    def save(self):
+        rc = self._save_settings(self.session)
+        if rc != 0:
+            raise RuntimeError(f"NvAPI_DRS_SaveSettings failed: {rc}")
+
+
+_NVIDIA_PROFILE_KEYS = {
+    "nv_power_mode": 0x1057EB71,
+    "nv_optimus": 0x10F9DC80,
+    "nv_optimus_app": 0x10F9DC81,
+    "nv_max_fps": 0x10835002,
+    "nv_bg_fps": 0x10835016,
+    "nv_low_latency": 0x007BA09E,
+    "nv_tex_quality": 0x00CE2691,
+    "nv_tex_aniso": 0x00E73211,
+    "nv_tex_trilinear": 0x002ECAF2,
+    "nv_refresh_rate": 0x0064B541,
+    "nv_vsync": 0x00A879CF,
+}
+
+_POWER_SETTING_GUIDS = {
+    "PROCTHROTTLEMIN": ("SUB_PROCESSOR", "893dee8e-2bef-41e0-89c6-b55d0929964c"),
+    "PROCTHROTTLEMAX": ("SUB_PROCESSOR", "bc5038f7-23e0-4960-96da-33abaf5935ec"),
+    "PERFBOOSTMODE": ("SUB_PROCESSOR", "be337238-0d82-4146-a960-4f3749d470c7"),
+    "ASPM": ("SUB_PCIEXPRESS", "ee12f906-d277-404b-b6da-e5fa1a576df5"),
+    "INTEL_GFX": ("44f3beca-a7c0-460e-9df2-bb8b99e0cba6", "3619c3f2-afb2-4afc-b0e9-e7fef372de36"),
+}
+
+_REG_PATHS = {
+    "gfx_drivers": (True, r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers"),
+    "game_bar": (False, r"Software\Microsoft\GameBar"),
+    "game_cfg": (False, r"System\GameConfigStore"),
+    "game_dvr": (False, r"Software\Microsoft\Windows\CurrentVersion\GameDVR"),
+    "gpu_pref": (False, r"Software\Microsoft\DirectX\UserGpuPreferences"),
+    "personalize": (False, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
+    "uwp_bg": (False, r"Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications"),
+    "edge_policy": (True, r"SOFTWARE\Policies\Microsoft\Edge"),
+    "chrome_policy": (True, r"SOFTWARE\Policies\Google\Chrome"),
+}
+
+_TUNING_GROUPS = [
+    {"id": "nvidia", "title": "Card Đồ Họa NVIDIA (Global Profile)", "subtitle": "Kiểm soát nguồn điện, FPS, Optimus và độ trễ ngay ở tầng driver NVAPI"},
+    {"id": "power", "title": "CPU, PCIe & Intel iGPU Power Plan", "subtitle": "Tối ưu riêng cho lúc cắm sạc (mượt) và dùng pin (mát, bền pin)"},
+    {"id": "windows", "title": "Windows Gaming & Tiết Kiệm Tài Nguyên Nền", "subtitle": "HAGS, Game Mode, VRR và tắt các tiến trình/hiệu ứng chạy ngầm"},
+]
+
+
+def _winreg_root(is_hklm: bool):
+    import winreg
+    return winreg.HKEY_LOCAL_MACHINE if is_hklm else winreg.HKEY_CURRENT_USER
+
+
+def _reg_read(path_key: str, value_name: str, default=None):
+    import winreg
+    is_hklm, subkey = _REG_PATHS[path_key]
+    try:
+        with winreg.OpenKey(_winreg_root(is_hklm), subkey, 0, winreg.KEY_READ) as key:
+            val, _ = winreg.QueryValueEx(key, value_name)
+            return val
+    except OSError:
+        return default
+
+
+def _reg_write_dword(path_key: str, value_name: str, value: int):
+    import winreg
+    is_hklm, subkey = _REG_PATHS[path_key]
+    with winreg.CreateKeyEx(_winreg_root(is_hklm), subkey, 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, value_name, 0, winreg.REG_DWORD, int(value))
+
+
+def _reg_write_str(path_key: str, value_name: str, value: str):
+    import winreg
+    is_hklm, subkey = _REG_PATHS[path_key]
+    with winreg.CreateKeyEx(_winreg_root(is_hklm), subkey, 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, str(value))
+
+
+def _reg_delete_value(path_key: str, value_name: str):
+    import winreg
+    is_hklm, subkey = _REG_PATHS[path_key]
+    try:
+        with winreg.OpenKey(_winreg_root(is_hklm), subkey, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, value_name)
+    except OSError:
+        pass
+
+
+def _merge_dx_global_settings(existing: str, enable_vrr: bool) -> str:
+    """Update SwapEffectUpgradeEnable & VRROptimizeEnable without clobbering other DirectX flags."""
+    pairs = {}
+    if existing:
+        for chunk in str(existing).split(";"):
+            if "=" in chunk:
+                k, v = chunk.split("=", 1)
+                k = k.strip()
+                if k:
+                    pairs[k] = v.strip()
+    target = "1" if enable_vrr else "0"
+    pairs["SwapEffectUpgradeEnable"] = "1" if enable_vrr else pairs.get("SwapEffectUpgradeEnable", "1")
+    pairs["VRROptimizeEnable"] = target
+    return ";".join(f"{k}={v}" for k, v in pairs.items()) + ";"
+
+
+def _run_powercfg(args: list, timeout: int = 5) -> str:
+    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0x08000000
+    res = subprocess.run(
+        ["powercfg"] + args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+        creationflags=flags,
+        timeout=timeout,
+    )
+    if res.returncode != 0 and args[:1] != ["-attributes"]:
+        raise RuntimeError(res.stderr.strip() or res.stdout.strip() or f"powercfg {args[0]} failed")
+    return res.stdout
+
+
+def _query_powercfg_all() -> dict:
+    """Parse current active scheme name and AC/DC values for tracked power settings in one call."""
+    out = _run_powercfg(["/q", "SCHEME_CURRENT"], timeout=6)
+    scheme_name = "Balanced"
+    m_scheme = re.search(r"Power Scheme GUID:\s*[0-9a-fA-F-]+\s*\((.+?)\)", out)
+    if m_scheme:
+        scheme_name = m_scheme.group(1).strip()
+
+    guid_to_key = {guid.lower(): key for key, (_, guid) in _POWER_SETTING_GUIDS.items()}
+    values = {key: {"ac": None, "dc": None} for key in _POWER_SETTING_GUIDS}
+    current_key = None
+
+    for line in out.splitlines():
+        m_guid = re.search(r"Power Setting GUID:\s*([0-9a-fA-F-]{36})", line)
+        if m_guid:
+            current_key = guid_to_key.get(m_guid.group(1).lower())
+            continue
+        if not current_key:
+            continue
+        m_ac = re.search(r"Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)", line)
+        if m_ac:
+            values[current_key]["ac"] = int(m_ac.group(1), 16)
+            continue
+        m_dc = re.search(r"Current DC Power Setting Index:\s*0x([0-9a-fA-F]+)", line)
+        if m_dc:
+            values[current_key]["dc"] = int(m_dc.group(1), 16)
+            current_key = None
+
+    return {"scheme_name": scheme_name, "values": values}
+
+
+def _set_powercfg_pair(setting_key: str, ac=None, dc=None):
+    sub, guid = _POWER_SETTING_GUIDS[setting_key]
+    if setting_key == "PERFBOOSTMODE":
+        try:
+            _run_powercfg(["-attributes", "SUB_PROCESSOR", "PERFBOOSTMODE", "-ATTRIB_HIDE"])
+        except Exception:
+            pass
+    if ac is not None:
+        _run_powercfg(["/setacvalueindex", "SCHEME_CURRENT", sub, guid, str(int(ac))])
+    if dc is not None:
+        _run_powercfg(["/setdcvalueindex", "SCHEME_CURRENT", sub, guid, str(int(dc))])
+    _run_powercfg(["/setactive", "SCHEME_CURRENT"])
+
+
+def _discover_offload_apps() -> list:
+    """Detect installed browsers, IDEs, Discord, WebView2, and downloaders for iGPU routing."""
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    prog_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    prog_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+
+    static_candidates = [
+        ("Google Chrome", os.path.join(prog_files, r"Google\Chrome\Application\chrome.exe")),
+        ("Microsoft Edge", os.path.join(prog_x86, r"Microsoft\Edge\Application\msedge.exe")),
+        ("Cốc Cốc Browser", os.path.join(local_app, r"CocCoc\Browser\Application\browser.exe")),
+        ("Brave Browser", os.path.join(prog_files, r"BraveSoftware\Brave-Browser\Application\brave.exe")),
+        ("Opera Browser", os.path.join(local_app, r"Programs\Opera\opera.exe")),
+        ("Visual Studio Code", os.path.join(local_app, r"Programs\Microsoft VS Code\Code.exe")),
+        ("Antigravity IDE", os.path.join(local_app, r"Programs\Antigravity\Antigravity.exe")),
+        ("Antigravity IDE", os.path.join(prog_files, r"Antigravity\Antigravity.exe")),
+        ("IDM Downloader", os.path.join(prog_x86, r"Internet Download Manager\IDMan.exe")),
+    ]
+
+    found = {}
+    for label, path in static_candidates:
+        if path and os.path.isfile(path):
+            found[path.lower()] = (label, path)
+
+    for pattern, label in [
+        (os.path.join(local_app, r"Discord\app-*\Discord.exe"), "Discord"),
+        (os.path.join(prog_x86, r"Microsoft\EdgeWebView\Application\*\msedgewebview2.exe"), "Edge WebView2 Runtime"),
+    ]:
+        for path in glob.glob(pattern):
+            if os.path.isfile(path):
+                found[path.lower()] = (label, path)
+
+    # Also read already configured DirectX UserGpuPreferences keys so custom entries show up
+    import winreg
+    existing_prefs = {}
+    try:
+        _, subkey = _REG_PATHS["gpu_pref"]
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_READ) as key:
+            idx = 0
+            while True:
+                try:
+                    name, val, _ = winreg.EnumValue(key, idx)
+                    idx += 1
+                    if name.lower().endswith(".exe"):
+                        existing_prefs[name.lower()] = (name, str(val))
+                        if name.lower() not in found and os.path.isfile(name):
+                            found[name.lower()] = (os.path.basename(name), name)
+                except OSError:
+                    break
+    except OSError:
+        pass
+
+    apps = []
+    for norm_path, (label, path) in sorted(found.items(), key=lambda kv: kv[1][0].lower()):
+        pref_val = existing_prefs.get(norm_path, (path, ""))[1]
+        is_igpu = "GpuPreference=1" in pref_val
+        apps.append({
+            "name": label,
+            "exe_name": os.path.basename(path),
+            "path": path,
+            "current_pref": pref_val or "Mặc định Windows",
+            "is_igpu": is_igpu,
+        })
+    return apps
+
+
+def _get_display_refresh_hz() -> int:
+    """Detect highest active monitor refresh rate (Hz) across all connected displays."""
+    class _DISPLAY_DEVICEW(ctypes.Structure):
+        _fields_ = [
+            ("cb", ctypes.c_uint32),
+            ("DeviceName", ctypes.c_wchar * 32),
+            ("DeviceString", ctypes.c_wchar * 128),
+            ("StateFlags", ctypes.c_uint32),
+            ("DeviceID", ctypes.c_wchar * 128),
+            ("DeviceKey", ctypes.c_wchar * 128),
+        ]
+
+    class _DEVMODEW(ctypes.Structure):
+        _fields_ = [
+            ("dmDeviceName", ctypes.c_wchar * 32),
+            ("dmSpecVersion", ctypes.c_uint16),
+            ("dmDriverVersion", ctypes.c_uint16),
+            ("dmSize", ctypes.c_uint16),
+            ("dmDriverExtra", ctypes.c_uint16),
+            ("dmFields", ctypes.c_uint32),
+            ("dmPositionX", ctypes.c_int32),
+            ("dmPositionY", ctypes.c_int32),
+            ("dmDisplayOrientation", ctypes.c_uint32),
+            ("dmDisplayFixedOutput", ctypes.c_uint32),
+            ("dmColor", ctypes.c_int16),
+            ("dmDuplex", ctypes.c_int16),
+            ("dmYResolution", ctypes.c_int16),
+            ("dmTTOption", ctypes.c_int16),
+            ("dmCollate", ctypes.c_int16),
+            ("dmFormName", ctypes.c_wchar * 32),
+            ("dmLogPixels", ctypes.c_uint16),
+            ("dmBitsPerPel", ctypes.c_uint32),
+            ("dmPelsWidth", ctypes.c_uint32),
+            ("dmPelsHeight", ctypes.c_uint32),
+            ("dmDisplayFlags", ctypes.c_uint32),
+            ("dmDisplayFrequency", ctypes.c_uint32),
+        ]
+
+    max_hz = 0
+    try:
+        user32 = ctypes.windll.user32
+        dd = _DISPLAY_DEVICEW()
+        dd.cb = ctypes.sizeof(_DISPLAY_DEVICEW)
+        idx = 0
+        while user32.EnumDisplayDevicesW(None, idx, ctypes.byref(dd), 0):
+            idx += 1
+            # DISPLAY_DEVICE_ACTIVE = 0x1
+            if dd.StateFlags & 0x1:
+                dm = _DEVMODEW()
+                dm.dmSize = ctypes.sizeof(_DEVMODEW)
+                if user32.EnumDisplaySettingsW(dd.DeviceName, -1, ctypes.byref(dm)):
+                    max_hz = max(max_hz, int(dm.dmDisplayFrequency))
+        if max_hz == 0:
+            dm = _DEVMODEW()
+            dm.dmSize = ctypes.sizeof(_DEVMODEW)
+            if user32.EnumDisplaySettingsW(None, -1, ctypes.byref(dm)):
+                max_hz = int(dm.dmDisplayFrequency)
+    except Exception:
+        pass
+    return max_hz
+
+
+def _recommended_max_fps(refresh_hz: int) -> int:
+    """Calculate optimal G-Sync/VRR FPS cap (3 FPS below active panel max Hz)."""
+    if refresh_hz >= 75:
+        return refresh_hz - 3
+    if refresh_hz > 0:
+        return refresh_hz
+    return 162
+
+
+def _build_fps_options(refresh_hz: int, rec_fps: int, current_val: int) -> list:
+    """Build dynamic Max Frame Rate options tailored to the active display Hz."""
+    base_values = {0, 60, 120, 144, 165, 240, rec_fps}
+    if refresh_hz > 0:
+        base_values.add(refresh_hz)
+    if current_val >= 0:
+        base_values.add(current_val)
+    options = []
+    for val in sorted(base_values):
+        if val == 0:
+            label = "Tắt (Không giới hạn)"
+        elif val == 60:
+            label = "60 FPS (Siêu mát)"
+        elif val == rec_fps:
+            hz_lbl = refresh_hz or (rec_fps + 3)
+            label = f"{val} FPS (Khuyên dùng {hz_lbl}Hz - G-Sync mượt)"
+        else:
+            label = f"{val} FPS"
+        options.append({"value": val, "label": label})
+    return options
+
+
+def get_tuning_telemetry() -> dict:
+    """Lightweight live GPU + display Hz payload for 2-second UI polling."""
+    return {
+        "telemetry": _get_nvidia_telemetry(),
+        "display_hz": _get_display_refresh_hz(),
+    }
+
+
+def _get_nvidia_telemetry() -> dict:
+    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0x08000000
+    info = {
+        "available": False,
+        "name": "Không phát hiện NVIDIA GPU",
+        "pstate": "-",
+        "temp_c": None,
+        "power_w": None,
+        "clock_mhz": None,
+        "mem_clock_mhz": None,
+    }
+    try:
+        res = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,pstate,temperature.gpu,power.draw,clocks.gr,clocks.mem",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            creationflags=flags,
+            timeout=3,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            parts = [p.strip() for p in res.stdout.strip().splitlines()[0].split(",")]
+            if len(parts) >= 6:
+                def _num(s):
+                    try:
+                        return float(s) if "N/A" not in s else None
+                    except ValueError:
+                        return None
+
+                info.update({
+                    "available": True,
+                    "name": parts[0],
+                    "pstate": parts[1],
+                    "temp_c": _num(parts[2]),
+                    "power_w": _num(parts[3]),
+                    "clock_mhz": _num(parts[4]),
+                    "mem_clock_mhz": _num(parts[5]),
+                })
+    except Exception:
+        pass
+    return info
+
+
+def _read_nvdrs_raw(sids: list) -> tuple:
+    """Read current NVDRS DWORDs in one session. Returns (available_bool, dict_of_sid_to_entry)."""
+    try:
+        with NvDrsClient() as drs:
+            return True, {sid: drs.get_dword(sid) for sid in sids}
+    except Exception:
+        return False, {}
+
+
+def _write_nvdrs_updates(updates: dict):
+    """Apply {sid: value_or_none} via NVAPI DRS and save nvdrsdb."""
+    with NvDrsClient() as drs:
+        for sid, val in updates.items():
+            if val is None:
+                drs.delete_setting(sid)
+            else:
+                drs.set_dword(sid, int(val))
+        drs.save()
+
+
+def _ensure_tuning_backup():
+    """Capture original system & NVIDIA settings once before CleanPC Master modifies them."""
+    if os.path.exists(TUNING_BACKUP_FILE):
+        return
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    power = _query_powercfg_all()["values"]
+    nv_ok, nv_raw = _read_nvdrs_raw(list(_NVIDIA_PROFILE_KEYS.values()))
+    apps = _discover_offload_apps()
+    app_backup = {app["path"]: _reg_read("gpu_pref", app["path"], None) for app in apps}
+    backup = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "power": power,
+        "nvidia_available": nv_ok,
+        "nvidia": {hex(sid): entry for sid, entry in nv_raw.items()},
+        "registry": {
+            "HwSchMode": _reg_read("gfx_drivers", "HwSchMode", None),
+            "AutoGameModeEnabled": _reg_read("game_bar", "AutoGameModeEnabled", None),
+            "AllowAutoGameMode": _reg_read("game_bar", "AllowAutoGameMode", None),
+            "GameDVR_Enabled": _reg_read("game_cfg", "GameDVR_Enabled", None),
+            "AppCaptureEnabled": _reg_read("game_dvr", "AppCaptureEnabled", None),
+            "DirectXUserGlobal": _reg_read("gpu_pref", "DirectXUserGlobalSettings", None),
+            "EnableTransparency": _reg_read("personalize", "EnableTransparency", None),
+            "UwpGlobalUserDisabled": _reg_read("uwp_bg", "GlobalUserDisabled", None),
+            "EdgeBackgroundModeEnabled": _reg_read("edge_policy", "BackgroundModeEnabled", None),
+            "EdgeStartupBoostEnabled": _reg_read("edge_policy", "StartupBoostEnabled", None),
+            "ChromeBackgroundMode": _reg_read("chrome_policy", "BackgroundModeEnabled", None),
+            "AppGpuPreferences": app_backup,
+        },
+    }
+    with open(TUNING_BACKUP_FILE, "w", encoding="utf-8") as f:
+        json.dump(backup, f, indent=2, ensure_ascii=False)
+
+
+def _apply_setting_action(setting_id: str, value) -> dict:
+    """Execute one setting update and return metadata about whether reboot/admin is required."""
+    requires_reboot = False
+
+    # NVIDIA Global Profile settings
+    if setting_id in ("nv_power_mode", "nv_max_fps", "nv_bg_fps", "nv_tex_quality", "nv_vsync"):
+        _write_nvdrs_updates({_NVIDIA_PROFILE_KEYS[setting_id]: int(value)})
+    elif setting_id == "nv_optimus":
+        val = 16 if bool(value) else 1
+        _write_nvdrs_updates({0x10F9DC80: val, 0x10F9DC81: val})
+    elif setting_id == "nv_low_latency":
+        _write_nvdrs_updates({0x007BA09E: 1 if bool(value) else 0})
+    elif setting_id == "nv_tex_opt":
+        val = 1 if bool(value) else 0
+        _write_nvdrs_updates({0x00E73211: val, 0x002ECAF2: val})
+    elif setting_id == "nv_refresh_rate":
+        _write_nvdrs_updates({0x0064B541: 1 if bool(value) else 0})
+
+    # CPU, PCIe & Intel iGPU Power Plan
+    elif setting_id == "cpu_boost_ac":
+        _set_powercfg_pair("PERFBOOSTMODE", ac=int(value))
+    elif setting_id == "cpu_boost_dc":
+        _set_powercfg_pair("PERFBOOSTMODE", dc=(0 if bool(value) else 2))
+    elif setting_id == "cpu_max_dc":
+        _set_powercfg_pair("PROCTHROTTLEMAX", dc=int(value))
+    elif setting_id == "pcie_aspm":
+        if bool(value):
+            _set_powercfg_pair("ASPM", ac=0, dc=2)
+        else:
+            _set_powercfg_pair("ASPM", ac=1, dc=1)
+    elif setting_id == "intel_igpu_power":
+        if bool(value):
+            _set_powercfg_pair("INTEL_GFX", ac=2, dc=0)
+        else:
+            _set_powercfg_pair("INTEL_GFX", ac=1, dc=1)
+
+    # Windows Gaming & Background Efficiency
+    elif setting_id == "win_hags":
+        _reg_write_dword("gfx_drivers", "HwSchMode", 2 if bool(value) else 1)
+        requires_reboot = True
+    elif setting_id == "win_gamemode":
+        on = 1 if bool(value) else 0
+        _reg_write_dword("game_bar", "AutoGameModeEnabled", on)
+        _reg_write_dword("game_bar", "AllowAutoGameMode", on)
+    elif setting_id == "win_gamedvr":
+        off = 0 if bool(value) else 1
+        _reg_write_dword("game_cfg", "GameDVR_Enabled", off)
+        _reg_write_dword("game_dvr", "AppCaptureEnabled", off)
+    elif setting_id == "win_vrr":
+        existing = _reg_read("gpu_pref", "DirectXUserGlobalSettings", "")
+        _reg_write_str("gpu_pref", "DirectXUserGlobalSettings", _merge_dx_global_settings(existing, bool(value)))
+    elif setting_id == "win_transparency":
+        _reg_write_dword("personalize", "EnableTransparency", 0 if bool(value) else 1)
+    elif setting_id == "win_uwp_bg":
+        _reg_write_dword("uwp_bg", "GlobalUserDisabled", 1 if bool(value) else 0)
+    elif setting_id == "browser_bg_off":
+        val = 0 if bool(value) else 1
+        _reg_write_dword("edge_policy", "BackgroundModeEnabled", val)
+        _reg_write_dword("edge_policy", "StartupBoostEnabled", val)
+        _reg_write_dword("chrome_policy", "BackgroundModeEnabled", val)
+    else:
+        raise ValueError(f"Unknown tuning setting: {setting_id}")
+
+    return {"requires_reboot": requires_reboot}
+
+
+_OPTIMAL_PROFILE_MAP = {
+    "nv_power_mode": 5,
+    "nv_optimus": True,
+    "nv_max_fps": 162,
+    "nv_bg_fps": 30,
+    "nv_low_latency": True,
+    "nv_tex_quality": 10,
+    "nv_tex_opt": True,
+    "nv_refresh_rate": True,
+    "nv_vsync": 1620202130,
+    "cpu_boost_ac": 3,
+    "cpu_boost_dc": True,
+    "cpu_max_dc": 85,
+    "pcie_aspm": True,
+    "intel_igpu_power": True,
+    "win_hags": True,
+    "win_gamemode": True,
+    "win_gamedvr": True,
+    "win_vrr": True,
+    "win_transparency": True,
+    "win_uwp_bg": True,
+    "browser_bg_off": True,
+}
+
+
+def get_system_tuning_status() -> dict:
+    """Inspect live NVIDIA telemetry, power plan, Windows registry states, and iGPU app routing."""
+    admin = is_admin()
+    telemetry = _get_nvidia_telemetry()
+    refresh_hz = _get_display_refresh_hz()
+    rec_fps = _recommended_max_fps(refresh_hz)
+    pwr = _query_powercfg_all()
+    pvals = pwr["values"]
+
+    nv_ok, nv_raw = _read_nvdrs_raw(list(_NVIDIA_PROFILE_KEYS.values()))
+
+    def _nv_val(sid: int, default: int = 0) -> int:
+        entry = nv_raw.get(sid)
+        return int(entry["value"]) if entry is not None else default
+
+    cur_max_fps = _nv_val(0x10835002, 0)
+    acceptable_max_fps = {rec_fps} | ({refresh_hz} if refresh_hz > 0 else set())
+
+    dx_global = str(_reg_read("gpu_pref", "DirectXUserGlobalSettings", "") or "")
+    hags_val = _reg_read("gfx_drivers", "HwSchMode", 1)
+    game_mode_val = _reg_read("game_bar", "AutoGameModeEnabled", 0)
+    dvr_cfg = _reg_read("game_cfg", "GameDVR_Enabled", 1)
+    dvr_cap = _reg_read("game_dvr", "AppCaptureEnabled", 1)
+    transparency_val = _reg_read("personalize", "EnableTransparency", 1)
+    uwp_bg_val = _reg_read("uwp_bg", "GlobalUserDisabled", 0)
+    edge_bg = _reg_read("edge_policy", "BackgroundModeEnabled", 1)
+    edge_boost = _reg_read("edge_policy", "StartupBoostEnabled", 1)
+    chrome_bg = _reg_read("chrome_policy", "BackgroundModeEnabled", 1)
+
+    p_boost_ac = pvals["PERFBOOSTMODE"]["ac"]
+    p_boost_dc = pvals["PERFBOOSTMODE"]["dc"]
+    p_max_dc = pvals["PROCTHROTTLEMAX"]["dc"]
+    p_aspm = pvals["ASPM"]
+    p_igpu = pvals["INTEL_GFX"]
+
+    settings = [
+        # Group: nvidia
+        {
+            "id": "nv_power_mode", "group": "nvidia", "type": "select", "requires_admin": True, "available": nv_ok,
+            "label": "Chế độ nguồn NVIDIA (Power Management)",
+            "desc": "Normal giúp RTX giảm xuống 0.2V–0.3V (~38°C) khi lướt web và tự bung max hiệu năng khi mở game.",
+            "current": _nv_val(0x1057EB71, 5), "optimal": 5,
+            "is_optimal": nv_ok and _nv_val(0x1057EB71, 5) == 5,
+            "options": [
+                {"value": 5, "label": "Normal (Khuyên dùng - Mát & Mượt)"},
+                {"value": 1, "label": "Prefer Max Perf (Luôn giữ xung cao)"},
+                {"value": 0, "label": "Optimal Power"},
+            ],
+        },
+        {
+            "id": "nv_optimus", "group": "nvidia", "type": "toggle", "requires_admin": True, "available": nv_ok,
+            "label": "Chuyển mạch GPU thông minh (Optimus Auto-Select)",
+            "desc": "Chỉ bật RTX khi chơi game/render; app nhẹ dùng Intel Iris Xe để máy mát và tiết kiệm pin.",
+            "current": _nv_val(0x10F9DC80, 16) == 16 and _nv_val(0x10F9DC81, 16) == 16, "optimal": True,
+            "is_optimal": nv_ok and _nv_val(0x10F9DC80, 16) == 16 and _nv_val(0x10F9DC81, 16) == 16,
+        },
+        {
+            "id": "nv_max_fps", "group": "nvidia", "type": "select", "requires_admin": True, "available": nv_ok,
+            "label": "Giới hạn FPS tối đa (Max Frame Rate)",
+            "desc": f"Tự tính theo màn hình {refresh_hz or 165}Hz ({rec_fps} FPS) để giảm nhiệt thừa mà vẫn giữ G-Sync/VRR mượt tuyệt đối.",
+            "current": cur_max_fps, "optimal": rec_fps,
+            "is_optimal": nv_ok and cur_max_fps in acceptable_max_fps,
+            "options": _build_fps_options(refresh_hz, rec_fps, cur_max_fps),
+        },
+        {
+            "id": "nv_bg_fps", "group": "nvidia", "type": "select", "requires_admin": True, "available": nv_ok,
+            "label": "Giới hạn FPS khi ẩn game / Alt-Tab (Background FPS)",
+            "desc": "Hạ FPS xuống 30 khi bạn chuyển sang Chrome hoặc màn hình chờ để hạ nhiệt tức thì.",
+            "current": _nv_val(0x10835016, 0), "optimal": 30,
+            "is_optimal": nv_ok and 0 < _nv_val(0x10835016, 0) <= 30,
+            "options": [
+                {"value": 0, "label": "Tắt"},
+                {"value": 20, "label": "20 FPS (Siêu mát)"},
+                {"value": 30, "label": "30 FPS (Khuyên dùng)"},
+                {"value": 60, "label": "60 FPS"},
+            ],
+        },
+        {
+            "id": "nv_low_latency", "group": "nvidia", "type": "toggle", "requires_admin": True, "available": nv_ok,
+            "label": "NVIDIA Low Latency Mode (Giảm độ trễ chuột/phím)",
+            "desc": "Giảm hàng đợi khung hình của CPU để phản hồi nhạy hơn trong game eSports.",
+            "current": _nv_val(0x007BA09E, 0) == 1, "optimal": True,
+            "is_optimal": nv_ok and _nv_val(0x007BA09E, 0) == 1,
+        },
+        {
+            "id": "nv_tex_quality", "group": "nvidia", "type": "select", "requires_admin": True, "available": nv_ok,
+            "label": "Texture Filtering - Quality",
+            "desc": "Ưu tiên Performance giúp tăng độ mượt mà không làm xấu hình ảnh rõ rệt.",
+            "current": _nv_val(0x00CE2691, 0), "optimal": 10,
+            "is_optimal": nv_ok and _nv_val(0x00CE2691, 0) in (10, 20),
+            "options": [
+                {"value": 10, "label": "Performance (Khuyên dùng)"},
+                {"value": 0, "label": "Quality (Mặc định)"},
+                {"value": 20, "label": "High Performance"},
+            ],
+        },
+        {
+            "id": "nv_tex_opt", "group": "nvidia", "type": "toggle", "requires_admin": True, "available": nv_ok,
+            "label": "Anisotropic & Trilinear Texture Optimization",
+            "desc": "Bật tối ưu hóa lọc vân bề mặt để tăng FPS miễn phí ở các góc nhìn xa.",
+            "current": _nv_val(0x00E73211, 0) == 1 and _nv_val(0x002ECAF2, 0) == 1, "optimal": True,
+            "is_optimal": nv_ok and _nv_val(0x00E73211, 0) == 1 and _nv_val(0x002ECAF2, 0) == 1,
+        },
+        {
+            "id": "nv_refresh_rate", "group": "nvidia", "type": "toggle", "requires_admin": True, "available": nv_ok,
+            "label": "Tần số quét ưu tiên cao nhất (Highest Available)",
+            "desc": "Đảm bảo game luôn chạy đúng tần số quét tối đa của màn hình (165Hz).",
+            "current": _nv_val(0x0064B541, 0) == 1, "optimal": True,
+            "is_optimal": nv_ok and _nv_val(0x0064B541, 0) == 1,
+        },
+        {
+            "id": "nv_vsync", "group": "nvidia", "type": "select", "requires_admin": True, "available": nv_ok,
+            "label": "Vertical Sync (V-Sync Global)",
+            "desc": "Để theo thiết lập từng game (Use 3D app setting) tránh khóa cứng gây tụt FPS hoặc input lag.",
+            "current": _nv_val(0x00A879CF, 1620202130), "optimal": 1620202130,
+            "is_optimal": nv_ok and _nv_val(0x00A879CF, 1620202130) == 1620202130,
+            "options": [
+                {"value": 1620202130, "label": "Theo từng game (Khuyên dùng)"},
+                {"value": 1199655232, "label": "Luôn tắt (Force Off)"},
+                {"value": 138504007, "label": "Luôn bật (Force On)"},
+            ],
+        },
+
+        # Group: power
+        {
+            "id": "cpu_boost_ac", "group": "power", "type": "select", "requires_admin": True, "available": p_boost_ac is not None,
+            "label": "CPU Turbo Boost khi cắm sạc (AC)",
+            "desc": "Efficient Enabled giữ hiệu năng cao khi cần nhưng không ép xung nóng vô ích ở tác vụ nhẹ.",
+            "current": p_boost_ac if p_boost_ac is not None else 2, "optimal": 3,
+            "is_optimal": p_boost_ac == 3,
+            "options": [
+                {"value": 0, "label": "Disabled (Siêu mát, không Boost)"},
+                {"value": 2, "label": "Aggressive (Mặc định - Dễ nóng)"},
+                {"value": 3, "label": "Efficient Enabled (Khuyên dùng - Mượt & Mát)"},
+                {"value": 4, "label": "Efficient Aggressive"},
+            ],
+        },
+        {
+            "id": "cpu_boost_dc", "group": "power", "type": "toggle", "requires_admin": True, "available": p_boost_dc is not None,
+            "label": "Tắt CPU Turbo Boost khi dùng Pin (DC)",
+            "desc": "Giữ nhiệt độ laptop mát rượi và tăng đáng kể thời lượng pin khi không cắm sạc.",
+            "current": p_boost_dc == 0, "optimal": True,
+            "is_optimal": p_boost_dc == 0,
+        },
+        {
+            "id": "cpu_max_dc", "group": "power", "type": "select", "requires_admin": True, "available": p_max_dc is not None,
+            "label": "Giới hạn hiệu năng CPU khi dùng Pin (DC)",
+            "desc": "Mức 85% đủ mượt cho công việc văn phòng & code mà giảm hẳn nhiệt độ tỏa ra.",
+            "current": p_max_dc if p_max_dc is not None else 100, "optimal": 85,
+            "is_optimal": p_max_dc is not None and p_max_dc <= 85,
+            "options": [
+                {"value": 75, "label": "75% (Pin lâu nhất)"},
+                {"value": 85, "label": "85% (Khuyên dùng)"},
+                {"value": 100, "label": "100% (Mặc định)"},
+            ],
+        },
+        {
+            "id": "pcie_aspm", "group": "power", "type": "toggle", "requires_admin": True, "available": p_aspm["ac"] is not None,
+            "label": "PCIe Link State Power Management (AC Off / Pin Max Savings)",
+            "desc": "Tắt ASPM khi cắm sạc để SSD NVMe & RTX đạt băng thông tối đa; bật Max Power Savings khi dùng pin.",
+            "current": p_aspm["ac"] == 0 and p_aspm["dc"] == 2, "optimal": True,
+            "is_optimal": p_aspm["ac"] == 0 and p_aspm["dc"] == 2,
+        },
+        {
+            "id": "intel_igpu_power", "group": "power", "type": "toggle", "requires_admin": True, "available": p_igpu["ac"] is not None,
+            "label": "Intel iGPU Power Plan (AC Max Perf / Pin Max Battery)",
+            "desc": "Giúp Intel Iris Xe mượt ở 165Hz khi cắm sạc và tiết kiệm điện tối đa khi dùng pin.",
+            "current": p_igpu["ac"] == 2 and p_igpu["dc"] == 0, "optimal": True,
+            "is_optimal": p_igpu["ac"] == 2 and p_igpu["dc"] == 0,
+        },
+
+        # Group: windows
+        {
+            "id": "win_hags", "group": "windows", "type": "toggle", "requires_admin": True, "available": True, "requires_reboot": True,
+            "label": "Hardware-Accelerated GPU Scheduling (HAGS)",
+            "desc": "Giảm tải lập lịch khung hình cho CPU & hỗ trợ DLSS Frame Gen (cần khởi động lại nếu thay đổi).",
+            "current": hags_val == 2, "optimal": True,
+            "is_optimal": hags_val == 2,
+        },
+        {
+            "id": "win_gamemode", "group": "windows", "type": "toggle", "requires_admin": False, "available": True,
+            "label": "Windows Game Mode",
+            "desc": "Ưu tiên tài nguyên CPU/GPU cho game và tạm hoãn Windows Update khi đang chơi.",
+            "current": game_mode_val == 1, "optimal": True,
+            "is_optimal": game_mode_val == 1,
+        },
+        {
+            "id": "win_gamedvr", "group": "windows", "type": "toggle", "requires_admin": False, "available": True,
+            "label": "Tắt quay màn hình nền Xbox Game DVR",
+            "desc": "Ngăn Windows ghi hình ngầm giúp giảm giật khựng (stutter) và giải phóng bộ nhớ đệm GPU.",
+            "current": dvr_cfg == 0 and dvr_cap == 0, "optimal": True,
+            "is_optimal": dvr_cfg == 0 and dvr_cap == 0,
+        },
+        {
+            "id": "win_vrr", "group": "windows", "type": "toggle", "requires_admin": False, "available": True,
+            "label": "DirectX Windowed VRR & Flip Optimization",
+            "desc": "Giảm độ trễ và giúp game Borderless Windowed mượt ngang Fullscreen.",
+            "current": "VRROptimizeEnable=1" in dx_global and "SwapEffectUpgradeEnable=1" in dx_global, "optimal": True,
+            "is_optimal": "VRROptimizeEnable=1" in dx_global and "SwapEffectUpgradeEnable=1" in dx_global,
+        },
+        {
+            "id": "win_transparency", "group": "windows", "type": "toggle", "requires_admin": False, "available": True,
+            "label": "Tắt hiệu ứng trong suốt (Transparency) của Windows",
+            "desc": "Giảm đánh thức iGPU/DWM khi mở Start Menu và cửa sổ làm việc.",
+            "current": transparency_val == 0, "optimal": True,
+            "is_optimal": transparency_val == 0,
+        },
+        {
+            "id": "win_uwp_bg", "group": "windows", "type": "toggle", "requires_admin": False, "available": True,
+            "label": "Tắt ứng dụng Windows Store (UWP) chạy ngầm",
+            "desc": "Ngăn các app nền Windows tự đánh thức CPU và tốn RAM vô ích.",
+            "current": uwp_bg_val == 1, "optimal": True,
+            "is_optimal": uwp_bg_val == 1,
+        },
+        {
+            "id": "browser_bg_off", "group": "windows", "type": "toggle", "requires_admin": True, "available": True,
+            "label": "Tắt Edge Startup Boost & Chrome/Edge chạy ngầm",
+            "desc": "Đóng trình duyệt sẽ giải phóng sạch tiến trình nền thay vì giữ nguyên dưới khay hệ thống.",
+            "current": edge_bg == 0 and edge_boost == 0 and chrome_bg == 0, "optimal": True,
+            "is_optimal": edge_bg == 0 and edge_boost == 0 and chrome_bg == 0,
+        },
+    ]
+
+    apps = _discover_offload_apps()
+    available_settings = [s for s in settings if s["available"]]
+    optimal_count = sum(1 for s in available_settings if s["is_optimal"])
+    total_count = len(available_settings)
+    score_pct = int(round((optimal_count / total_count) * 100)) if total_count else 100
+
+    return {
+        "is_admin": admin,
+        "has_backup": os.path.exists(TUNING_BACKUP_FILE),
+        "power_scheme": pwr["scheme_name"],
+        "display_hz": refresh_hz,
+        "telemetry": telemetry,
+        "groups": _TUNING_GROUPS,
+        "settings": settings,
+        "offload_apps": apps,
+        "summary": {
+            "optimal_count": optimal_count,
+            "total_count": total_count,
+            "score_pct": score_pct,
+            "offload_enabled_count": sum(1 for a in apps if a["is_igpu"]),
+            "offload_total_count": len(apps),
+        },
+    }
+
+
+def apply_system_tuning_setting(setting_id: str, value) -> dict:
+    """Apply a single performance/GPU setting change after backing up original defaults."""
+    _ensure_tuning_backup()
+    try:
+        meta = _apply_setting_action(setting_id, value)
+        msg = "Đã cập nhật thiết lập."
+        if meta.get("requires_reboot"):
+            msg = "Đã cập nhật! Khởi động lại máy (Restart) để HAGS có hiệu lực."
+        return {
+            "success": True,
+            "message": msg,
+            "requires_reboot": meta.get("requires_reboot", False),
+            "status": get_system_tuning_status(),
+        }
+    except PermissionError:
+        return {"success": False, "need_admin": True, "error": "Thiết lập này yêu cầu quyền Administrator."}
+    except Exception as e:
+        err_str = str(e)
+        need_adm = "access is denied" in err_str.lower() or "privilege" in err_str.lower() or not is_admin()
+        return {"success": False, "need_admin": need_adm, "error": err_str}
+
+
+def toggle_igpu_offload_app(exe_path: str, enabled: bool) -> dict:
+    """Toggle Windows UserGpuPreferences iGPU Power Saving (GpuPreference=1) for a specific app."""
+    if not exe_path:
+        return {"success": False, "error": "Thiếu đường dẫn ứng dụng."}
+    _ensure_tuning_backup()
+    try:
+        if enabled:
+            _reg_write_str("gpu_pref", exe_path, "GpuPreference=1;")
+        else:
+            _reg_delete_value("gpu_pref", exe_path)
+        return {
+            "success": True,
+            "message": f"Đã {'ép dùng Intel iGPU' if enabled else 'trả về mặc định GPU'} cho {os.path.basename(exe_path)}.",
+            "status": get_system_tuning_status(),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def apply_optimal_tuning_profile() -> dict:
+    """Apply all recommended performance & cooling optimizations in one click."""
+    _ensure_tuning_backup()
+    errors = []
+    applied = 0
+    requires_reboot = False
+
+    # Batch NVDRS settings into a single write+save transaction for speed & atomicity
+    rec_fps = _recommended_max_fps(_get_display_refresh_hz())
+    nv_batch = {
+        0x1057EB71: 5,
+        0x10F9DC80: 16,
+        0x10F9DC81: 16,
+        0x10835002: rec_fps,
+        0x10835016: 30,
+        0x007BA09E: 1,
+        0x00CE2691: 10,
+        0x00E73211: 1,
+        0x002ECAF2: 1,
+        0x0064B541: 1,
+        0x00A879CF: 1620202130,
+    }
+    try:
+        nv_ok, _ = _read_nvdrs_raw([0x1057EB71])
+        if nv_ok:
+            _write_nvdrs_updates(nv_batch)
+            applied += 9
+    except Exception as e:
+        errors.append(f"NVIDIA NVAPI: {e}")
+
+    non_nv_ids = [sid for sid in _OPTIMAL_PROFILE_MAP if not sid.startswith("nv_")]
+    for sid in non_nv_ids:
+        try:
+            meta = _apply_setting_action(sid, _OPTIMAL_PROFILE_MAP[sid])
+            applied += 1
+            if meta.get("requires_reboot"):
+                requires_reboot = True
+        except Exception as e:
+            errors.append(f"{sid}: {e}")
+
+    for app in _discover_offload_apps():
+        try:
+            _reg_write_str("gpu_pref", app["path"], "GpuPreference=1;")
+            applied += 1
+        except Exception as e:
+            errors.append(f"{app['exe_name']}: {e}")
+
+    need_adm = bool(errors) and not is_admin()
+    return {
+        "success": applied > 0 and (len(errors) == 0 or is_admin()),
+        "partial": applied > 0 and len(errors) > 0,
+        "need_admin": need_adm,
+        "applied_count": applied,
+        "errors": errors,
+        "requires_reboot": requires_reboot,
+        "message": (
+            "Đã tối ưu toàn bộ GPU NVIDIA, CPU Power Plan & Windows mượt & mát!"
+            if not errors
+            else f"Đã áp dụng {applied} mục. Một số mục hệ thống cần quyền Administrator."
+        ),
+        "status": get_system_tuning_status(),
+    }
+
+
+def restore_tuning_defaults() -> dict:
+    """Restore original settings from tuning_backup.json (or safe Windows/NVIDIA defaults)."""
+    errors = []
+
+    if os.path.exists(TUNING_BACKUP_FILE):
+        with open(TUNING_BACKUP_FILE, "r", encoding="utf-8") as f:
+            b = json.load(f)
+
+        for key in _POWER_SETTING_GUIDS:
+            pair = b.get("power", {}).get(key, {})
+            if pair.get("ac") is not None or pair.get("dc") is not None:
+                try:
+                    _set_powercfg_pair(key, ac=pair.get("ac"), dc=pair.get("dc"))
+                except Exception as e:
+                    errors.append(f"Power {key}: {e}")
+
+        reg = b.get("registry", {})
+        if reg.get("HwSchMode") is not None:
+            try:
+                _reg_write_dword("gfx_drivers", "HwSchMode", reg["HwSchMode"])
+            except Exception as e:
+                errors.append(f"HwSchMode: {e}")
+
+        for b_key, pk, name in [
+            ("AutoGameModeEnabled", "game_bar", "AutoGameModeEnabled"),
+            ("AllowAutoGameMode", "game_bar", "AllowAutoGameMode"),
+            ("GameDVR_Enabled", "game_cfg", "GameDVR_Enabled"),
+            ("AppCaptureEnabled", "game_dvr", "AppCaptureEnabled"),
+            ("EnableTransparency", "personalize", "EnableTransparency"),
+            ("UwpGlobalUserDisabled", "uwp_bg", "GlobalUserDisabled"),
+            ("EdgeBackgroundModeEnabled", "edge_policy", "BackgroundModeEnabled"),
+            ("EdgeStartupBoostEnabled", "edge_policy", "StartupBoostEnabled"),
+            ("ChromeBackgroundMode", "chrome_policy", "BackgroundModeEnabled"),
+        ]:
+            try:
+                val = reg.get(b_key)
+                if val is not None:
+                    _reg_write_dword(pk, name, int(val))
+                else:
+                    _reg_delete_value(pk, name)
+            except Exception as e:
+                errors.append(f"{b_key}: {e}")
+
+        if reg.get("DirectXUserGlobal") is not None:
+            _reg_write_str("gpu_pref", "DirectXUserGlobalSettings", reg["DirectXUserGlobal"])
+
+        for exe, val in (reg.get("AppGpuPreferences") or {}).items():
+            if val:
+                _reg_write_str("gpu_pref", exe, val)
+            else:
+                _reg_delete_value("gpu_pref", exe)
+
+        nv_backup = b.get("nvidia", {})
+        if nv_backup:
+            try:
+                updates = {}
+                for sid_hex, entry in nv_backup.items():
+                    sid = int(sid_hex, 16)
+                    updates[sid] = None if (entry is None or entry.get("location") != 0) else int(entry["value"])
+                _write_nvdrs_updates(updates)
+            except Exception as e:
+                errors.append(f"NVIDIA NVAPI: {e}")
+    else:
+        # Safe factory defaults if no backup exists yet
+        try:
+            _set_powercfg_pair("PROCTHROTTLEMIN", ac=5, dc=5)
+            _set_powercfg_pair("PROCTHROTTLEMAX", ac=100, dc=100)
+            _set_powercfg_pair("PERFBOOSTMODE", ac=2, dc=2)
+            _set_powercfg_pair("INTEL_GFX", ac=1, dc=1)
+        except Exception as e:
+            errors.append(f"Power Plan: {e}")
+
+        try:
+            _write_nvdrs_updates({sid: None for sid in _NVIDIA_PROFILE_KEYS.values()})
+        except Exception as e:
+            errors.append(f"NVIDIA NVAPI: {e}")
+
+    return {
+        "success": len(errors) == 0,
+        "need_admin": bool(errors) and not is_admin(),
+        "errors": errors,
+        "message": (
+            "Đã khôi phục toàn bộ cấu hình về nguyên bản!"
+            if not errors
+            else "Đã khôi phục một phần (một số mục cần quyền Administrator)."
+        ),
+        "status": get_system_tuning_status(),
+    }
+
 
 

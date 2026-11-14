@@ -13,3 +13,5 @@ query
 *.log
 .vscode/
 .idea/
+scripts/backup_*.json
+

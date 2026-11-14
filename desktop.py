@@ -479,6 +479,42 @@ class CleanPCApi:
         except Exception as e:
             return {"success": False, "message": str(e)}
 
+    def get_tuning_status(self):
+        try:
+            return cleaner_core.get_system_tuning_status()
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_tuning_telemetry(self):
+        try:
+            return cleaner_core.get_tuning_telemetry()
+        except Exception as e:
+            return {"error": str(e)}
+
+    def apply_tuning_setting(self, setting_id, value):
+        try:
+            return cleaner_core.apply_system_tuning_setting(setting_id, value)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def toggle_tuning_app(self, path, enabled):
+        try:
+            return cleaner_core.toggle_igpu_offload_app(path, bool(enabled))
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def optimize_all_tuning(self):
+        try:
+            return cleaner_core.apply_optimal_tuning_profile()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def restore_tuning_defaults(self):
+        try:
+            return cleaner_core.restore_tuning_defaults()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def open_explorer(self, path):
         try:
             return {"success": cleaner_core.open_in_explorer(path)}
@@ -499,16 +535,20 @@ class CleanPCApi:
     def restart_admin(self):
         """Elevate process using native Windows ShellExecuteW."""
         try:
-            script_path = os.path.abspath(__file__)
-            ctypes.windll.shell32.ShellExecuteW(
+            is_frozen = getattr(sys, "frozen", False)
+            launch_params = "" if is_frozen else f'"{os.path.abspath(__file__)}"'
+            work_dir = os.path.dirname(sys.executable) if is_frozen else BASE_DIR
+            ret = ctypes.windll.shell32.ShellExecuteW(
                 None,
                 "runas",
                 sys.executable,
-                f'"{script_path}"',
-                BASE_DIR,
+                launch_params,
+                work_dir,
                 1
             )
-            threading.Thread(target=lambda: (time.sleep(1.0), os._exit(0)), daemon=True).start()
+            if ret <= 32:
+                return {"success": False, "error": f"ShellExecuteW failed with code {ret}"}
+            threading.Thread(target=lambda: (time.sleep(0.6), force_quit_application()), daemon=True).start()
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}

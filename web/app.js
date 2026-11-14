@@ -15,7 +15,10 @@ const state = {
   selectedDuplicatePaths: new Set(),
   largeFiles: [],
   isScanningDuplicates: false,
-  duplicatePollTimer: null
+  duplicatePollTimer: null,
+  tuningStatus: null,
+  isTuningBusy: false,
+  tuningPollTimer: null
 };
 
 // -----------------------------------------------------------------------------
@@ -31,9 +34,6 @@ function initApp() {
 
 window.addEventListener('pywebviewready', () => {
   console.log('[CleanPC] PyWebView Native API đã kết nối.');
-  loadSystemOverview();
-  loadAutostartConfig();
-  loadMemoryDaemonConfig();
 });
 
 if (document.readyState === 'loading') {
@@ -129,6 +129,18 @@ function setupNavigation() {
       if (targetTabId === 'tab-junk' && state.junkCategories.length === 0) {
         scanJunkCategories();
       }
+
+      if (targetTabId === 'tab-tuning') {
+        loadTuningStatus();
+        if (!state.tuningPollTimer) {
+          state.tuningPollTimer = setInterval(pollTuningTelemetry, 2000);
+        }
+      } else {
+        if (state.tuningPollTimer) {
+          clearInterval(state.tuningPollTimer);
+          state.tuningPollTimer = null;
+        }
+      }
     });
   });
 
@@ -140,6 +152,36 @@ function setupNavigation() {
       showToast(`Đã chọn phạm vi quét: ${path}`, 'info');
     });
   });
+
+  // Quick path shortcut buttons in Large Files Tab
+  document.querySelectorAll('.quick-large-path-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const path = btn.getAttribute('data-path');
+      document.getElementById('large-target-dir').value = path;
+      showToast(`Đã chọn phạm vi tìm tệp lớn: ${path}`, 'info');
+    });
+  });
+
+  // Browse Folder Buttons
+  const bindBrowseFolder = (btnId, inputId) => {
+    const btn = document.getElementById(btnId);
+    const input = document.getElementById(inputId);
+    if (!btn || !input) return;
+    btn.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/system/choose_folder', { method: 'POST' });
+        const d = await res.json();
+        if (d.success && d.path) {
+          input.value = d.path;
+          showToast(`Đã chọn thư mục: ${d.path}`, 'info');
+        }
+      } catch (e) {
+        showToast(`Không thể mở hộp thoại chọn thư mục: ${e.message}`, 'warning');
+      }
+    });
+  };
+  bindBrowseFolder('btn-browse-dup-folder', 'dup-target-dir');
+  bindBrowseFolder('btn-browse-large-folder', 'large-target-dir');
 }
 
 // -----------------------------------------------------------------------------
@@ -370,6 +412,12 @@ async function startDuplicateScan() {
   const btnCancel = document.getElementById('btn-cancel-duplicate-scan');
   const progressCard = document.getElementById('dup-progress-card');
   const resultsBar = document.getElementById('dup-results-bar');
+  const targets = targetDir.split(/[,;]+/).map(s => s.trim()).filter(Boolean);
+  if (targets.length === 0) {
+    showToast("Vui lòng nhập đường dẫn thư mục hoặc ổ đĩa hợp lệ!", "warning");
+    return;
+  }
+
   const container = document.getElementById('duplicate-groups-container');
 
   btnStart.style.display = 'none';
@@ -385,7 +433,7 @@ async function startDuplicateScan() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        targets: [targetDir],
+        targets: targets,
         min_size_mb: parseFloat(minSizeMb),
         file_types: fileExts
       })
@@ -652,10 +700,11 @@ async function scanLargeFiles() {
       })
     });
     const data = await res.json();
+    if (data.error) throw new Error(data.error);
     state.largeFiles = data.files || [];
 
     renderLargeFilesTable(data);
-    showToast(`Tìm thấy ${state.largeFiles.length} tệp lớn (Tổng ${data.total_formatted})!`, 'success');
+    showToast(`Tìm thấy ${state.largeFiles.length} tệp lớn (Tổng ${data.total_formatted || '0 B'})!`, 'success');
 
   } catch (err) {
     showToast(`Lỗi quét tệp lớn: ${err.message}`, 'danger');
@@ -672,7 +721,7 @@ function renderLargeFilesTable(data) {
 
   if (files.length === 0) {
     container.innerHTML = `
-      <div style="text-align: center; padding: 40px; color: var(--text-muted);">
+      <div style="text-align: center; padding: 32px 20px; color: var(--text-muted);">
         Không tìm thấy tệp nào vượt quá kích thước yêu cầu.
       </div>
     `;
@@ -680,50 +729,61 @@ function renderLargeFilesTable(data) {
   }
 
   const maxFileSize = files[0].size || 1;
+  const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
 
   container.innerHTML = `
-    <div class="data-table-container">
-      <table class="data-table">
+    <div class="large-files-summary">
+      <span>Hiển thị <strong>${files.length}</strong> tệp lớn nhất</span>
+      <span>Tổng dung lượng: <strong>${formatBytes(totalBytes)}</strong></span>
+    </div>
+    <div class="data-table-container large-files-table-wrap">
+      <table class="data-table large-files-table">
         <thead>
           <tr>
-            <th>Tên tệp</th>
-            <th>Dung lượng</th>
-            <th>Tỷ lệ</th>
-            <th>Thời gian sửa đổi</th>
-            <th>Thao tác</th>
+            <th class="col-file">Tệp & Đường dẫn</th>
+            <th class="col-size">Dung lượng</th>
+            <th class="col-date">Sửa đổi</th>
+            <th class="col-actions">Thao tác</th>
           </tr>
         </thead>
         <tbody>
           ${files.map(f => {
-            const pct = Math.round((f.size / maxFileSize) * 100);
+            const pct = Math.max(4, Math.round((f.size / maxFileSize) * 100));
+            const [datePart, timePart] = (f.mtime_str || '').split(' ');
             return `
               <tr>
-                <td>
+                <td class="col-file">
                   <div class="file-name-cell">
-                    <div class="file-icon">${escapeHtml(f.extension.toUpperCase().slice(0, 4))}</div>
-                    <div>
-                      <div style="font-weight: 600; color: var(--text-main);">${escapeHtml(f.name)}</div>
-                      <div style="font-size: 0.78rem; color: var(--text-dim); max-width: 480px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(f.path)}">
-                        ${escapeHtml(f.directory)}
-                      </div>
+                    <div class="file-icon">${escapeHtml((f.extension || 'FILE').toUpperCase().slice(0, 4))}</div>
+                    <div class="file-meta-cell">
+                      <div class="file-name-text" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</div>
+                      <div class="file-dir-text" title="${escapeHtml(f.path)}">${escapeHtml(f.directory)}</div>
                     </div>
                   </div>
                 </td>
-                <td style="font-weight: 700; color: var(--primary); white-space: nowrap;">${f.size_formatted}</td>
-                <td style="width: 140px;">
-                  <div class="progress-container" style="height: 6px; margin-bottom: 0;">
-                    <div class="progress-bar" style="width: ${pct}%;"></div>
+                <td class="col-size">
+                  <div class="file-size-stack">
+                    <span class="file-size-value">${f.size_formatted}</span>
+                    <div class="progress-container" style="height: 5px; margin-bottom: 0;">
+                      <div class="progress-bar" style="width: ${pct}%;"></div>
+                    </div>
                   </div>
                 </td>
-                <td style="color: var(--text-muted); font-size: 0.82rem; white-space: nowrap;">${f.mtime_str}</td>
-                <td style="white-space: nowrap;">
-                  <button class="btn btn-sm btn-outline btn-open-explorer" data-path="${escapeHtml(f.path)}" title="Mở trong Explorer">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
-                    Mở
-                  </button>
-                  <button class="btn btn-sm btn-danger btn-delete-single-file" data-path="${escapeHtml(f.path)}" data-size="${f.size_formatted}" data-name="${escapeHtml(f.name)}" style="margin-left: 6px;" title="Xóa tệp này">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
-                  </button>
+                <td class="col-date">
+                  <div class="file-date-stack">
+                    <span>${escapeHtml(datePart || '')}</span>
+                    <span class="file-date-time">${escapeHtml(timePart || '')}</span>
+                  </div>
+                </td>
+                <td class="col-actions">
+                  <div class="file-actions-group">
+                    <button class="btn btn-sm btn-outline btn-icon-sm btn-open-explorer" data-path="${escapeHtml(f.path)}" title="Mở thư mục trong Explorer">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                    </button>
+                    <button class="btn btn-sm btn-danger btn-icon-sm btn-delete-single-file" data-path="${escapeHtml(f.path)}" data-size="${f.size_formatted}" data-name="${escapeHtml(f.name)}" title="Xóa tệp này">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                    </button>
+                  </div>
                 </td>
               </tr>
             `;
@@ -747,10 +807,13 @@ function renderLargeFilesTable(data) {
       const nm = btn.getAttribute('data-name');
       confirmDeleteAction({
         title: "Xác Nhận Xóa Tệp Lớn",
-        message: `Bạn có chắc muốn xóa tệp: <strong>${nm}</strong> (${sz})?<br><span style="font-size:0.8rem;color:var(--text-dim);">${p}</span>`,
+        message: `Bạn có chắc muốn xóa tệp: <strong>${escapeHtml(nm)}</strong> (${escapeHtml(sz)})?<br><span style="font-size:0.8rem;color:var(--text-dim);word-break:break-all;">${escapeHtml(p)}</span>`,
         paths: [p],
-        onSuccess: () => {
-          scanLargeFiles();
+        defaultRecycleBin: true,
+        onSuccess: (d) => {
+          const deletedSet = new Set(d?.deleted_paths || [p]);
+          state.largeFiles = state.largeFiles.filter(item => !deletedSet.has(item.path));
+          renderLargeFilesTable({ files: state.largeFiles });
           loadSystemOverview();
         }
       });
@@ -796,10 +859,12 @@ async function runDriveTrim(driveLetter) {
 // -----------------------------------------------------------------------------
 let pendingAction = null;
 
-function confirmDeleteAction({ title, message, paths, onConfirm, onSuccess }) {
+function confirmDeleteAction({ title, message, paths, defaultRecycleBin = true, onConfirm, onSuccess }) {
   const modal = document.getElementById('confirm-modal');
   document.getElementById('modal-title').textContent = title || "Xác Nhận Dọn Dẹp";
   document.getElementById('modal-body-text').innerHTML = message;
+  const chkRecycle = document.getElementById('modal-use-recycle-bin');
+  if (chkRecycle) chkRecycle.checked = defaultRecycleBin !== false;
   
   pendingAction = async () => {
     const useRecycleBin = document.getElementById('modal-use-recycle-bin').checked;
@@ -867,6 +932,25 @@ function setupEventListeners() {
 
   // Junk Buttons
   document.getElementById('btn-scan-junk').addEventListener('click', scanJunkCategories);
+
+  // Performance & Cooling Tuning Buttons
+  const btnTuningRefresh = document.getElementById('btn-tuning-refresh');
+  if (btnTuningRefresh) btnTuningRefresh.addEventListener('click', () => loadTuningStatus(true));
+  const btnTuningOptAll = document.getElementById('btn-tuning-optimize-all');
+  if (btnTuningOptAll) btnTuningOptAll.addEventListener('click', runOptimizeAllTuning);
+  const btnTuningRestore = document.getElementById('btn-tuning-restore');
+  if (btnTuningRestore) btnTuningRestore.addEventListener('click', runRestoreTuningDefaults);
+  const btnTuningElevate = document.getElementById('btn-tuning-elevate');
+  if (btnTuningElevate) {
+    btnTuningElevate.addEventListener('click', async () => {
+      try {
+        await fetch('/api/system/restart_admin', { method: 'POST' });
+        showToast('Đang khởi động lại CleanPC với quyền Administrator...', 'info');
+      } catch (e) {
+        showToast(`Lỗi nâng quyền: ${e.message}`, 'danger');
+      }
+    });
+  }
   document.getElementById('btn-select-all-junk').addEventListener('click', () => {
     state.junkCategories.forEach(c => {
       if (c.total_files > 0) state.selectedJunkCategories.add(c.id);
@@ -890,6 +974,7 @@ function setupEventListeners() {
     confirmDeleteAction({
       title: "Xác Nhận Dọn Rác Hệ Thống",
       message: `Bạn sắp dọn dẹp <strong>${selectedIds.length} danh mục rác</strong> đã chọn, ước tính giải phóng <strong>${formatBytes(totalSize)}</strong> dung lượng.`,
+      defaultRecycleBin: false,
       onConfirm: async (useRecycleBin) => {
         try {
           const res = await fetch('/api/junk/clean', {
@@ -1003,6 +1088,7 @@ function setupEventListeners() {
       confirmDeleteAction({
         title: "Xác Nhận Dọn Dẹp Nhanh 1-Click",
         message: `Đã phát hiện <strong>${safeFiles.toLocaleString()} tệp rác an toàn</strong> thuộc <strong>${safeCats.length} danh mục</strong> (ước tính giải phóng <strong>${formatBytes(safeBytes)}</strong>).<br><br>Bạn có muốn tiến hành dọn dẹp ngay không?`,
+        defaultRecycleBin: false,
         onConfirm: async (useRecycleBin) => {
           try {
             const cleanRes = await fetch('/api/junk/clean', {
@@ -1019,7 +1105,8 @@ function setupEventListeners() {
               msg += ` (${d.total_locked_formatted} đang bị ứng dụng khác khóa)`;
             }
             showToast(msg, 'success');
-            await Promise.all([loadSystemOverview(), scanJunkCategories()]);
+            loadSystemOverview();
+            scanJunkCategories();
           } catch (err) {
             showToast(`Lỗi dọn rác nhanh: ${err.message}`, 'danger');
           }
@@ -1518,15 +1605,320 @@ document.addEventListener('visibilitychange', () => {
       clearInterval(state.duplicatePollTimer);
       state.duplicatePollTimer = null;
     }
+    if (state.tuningPollTimer) {
+      clearInterval(state.tuningPollTimer);
+      state.tuningPollTimer = null;
+    }
   } else {
-    // Window restored to foreground: resume live polling if memory tab is active
+    // Window restored to foreground: resume live polling if memory or tuning tab is active
     const activeTab = document.querySelector('.nav-item.active');
-    if (activeTab && activeTab.getAttribute('data-tab') === 'tab-memory') {
+    const tabId = activeTab ? activeTab.getAttribute('data-tab') : '';
+    if (tabId === 'tab-memory') {
       loadMemoryStatus();
       if (!state.memoryPollTimer) {
         state.memoryPollTimer = setInterval(loadMemoryStatus, 2000);
       }
+    } else if (tabId === 'tab-tuning') {
+      loadTuningStatus();
+      if (!state.tuningPollTimer) {
+        state.tuningPollTimer = setInterval(pollTuningTelemetry, 2000);
+      }
     }
   }
 });
+
+// -----------------------------------------------------------------------------
+// Performance, NVIDIA GPU & Cooling Tuner Controller
+// -----------------------------------------------------------------------------
+async function loadTuningStatus(showFeedback = false) {
+  try {
+    const res = await fetch('/api/tuning/status');
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    state.tuningStatus = data;
+    renderTuningView(data);
+    if (showFeedback) {
+      showToast('Đã cập nhật trạng thái GPU & Power Plan mới nhất.', 'info');
+    }
+  } catch (e) {
+    const container = document.getElementById('tuning-groups-container');
+    if (container) {
+      container.innerHTML = `<div class="card" style="color:var(--danger);text-align:center;">Lỗi tải cấu hình hiệu năng: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+}
+
+function updateTuningTelemetryCards(tele, displayHz) {
+  const t = tele || {};
+  const setText = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  setText('tuning-gpu-name', t.name || 'Không phát hiện NVIDIA GPU');
+  const pstateEl = document.getElementById('tuning-gpu-pstate');
+  if (pstateEl) {
+    pstateEl.textContent = t.available ? `P-State ${t.pstate}` : 'Offline';
+  }
+  setText('tuning-gpu-temp', t.temp_c !== null && t.temp_c !== undefined ? `${Math.round(t.temp_c)} °C` : '-- °C');
+  setText('tuning-gpu-power', t.power_w !== null && t.power_w !== undefined ? `${t.power_w.toFixed(1)} W` : '-- W');
+  setText('tuning-gpu-clock', t.clock_mhz !== null && t.clock_mhz !== undefined ? `${Math.round(t.clock_mhz)} MHz` : '-- MHz');
+  setText('tuning-display-hz', displayHz ? `${displayHz} Hz` : '-- Hz');
+}
+
+async function pollTuningTelemetry() {
+  if (document.hidden || state.isTuningBusy) return;
+  try {
+    const res = await fetch('/api/tuning/telemetry');
+    const data = await res.json();
+    if (data.error) return;
+    const prevHz = state.tuningStatus ? state.tuningStatus.display_hz : null;
+    updateTuningTelemetryCards(data.telemetry, data.display_hz);
+    if (state.tuningStatus) {
+      state.tuningStatus.telemetry = data.telemetry;
+      if (data.display_hz && prevHz && data.display_hz !== prevHz) {
+        state.tuningStatus.display_hz = data.display_hz;
+        loadTuningStatus();
+      }
+    }
+  } catch (_) {}
+}
+
+function renderTuningView(data) {
+  if (!data) return;
+
+  const adminBanner = document.getElementById('tuning-admin-banner');
+  if (adminBanner) {
+    adminBanner.style.display = data.is_admin ? 'none' : 'flex';
+  }
+
+  const setText = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  updateTuningTelemetryCards(data.telemetry, data.display_hz);
+
+  const summary = data.summary || {};
+  setText('tuning-power-scheme', `Power Plan: ${data.power_scheme || 'Balanced'}`);
+  setText('tuning-score-pct', `${summary.score_pct ?? 0}%`);
+  setText('tuning-score-badge', `${summary.optimal_count ?? 0} / ${summary.total_count ?? 0} tối ưu`);
+  setText('tuning-offload-count', `${summary.offload_enabled_count ?? 0}/${summary.offload_total_count ?? 0} app`);
+  setText('tuning-offload-badge', `${summary.offload_enabled_count ?? 0} / ${summary.offload_total_count ?? 0} dùng iGPU`);
+
+  const groupsContainer = document.getElementById('tuning-groups-container');
+  if (groupsContainer) {
+    const groups = data.groups || [];
+    const settings = data.settings || [];
+
+    groupsContainer.innerHTML = groups.map(group => {
+      const items = settings.filter(s => s.group === group.id);
+      const optCount = items.filter(i => i.is_optimal).length;
+
+      const itemsHtml = items.map(item => {
+        const disabledAttr = !item.available ? 'disabled' : '';
+        const statusPill = !item.available
+          ? `<span class="tuning-pill admin">Không khả dụng</span>`
+          : (item.is_optimal
+              ? `<span class="tuning-pill ok">Đã tối ưu</span>`
+              : `<span class="tuning-pill warn">Chưa tối ưu</span>`);
+        const adminPill = item.requires_admin && !data.is_admin
+          ? `<span class="tuning-pill admin">Cần Admin</span>`
+          : '';
+        const rebootPill = item.requires_reboot
+          ? `<span class="tuning-pill admin">Cần Restart</span>`
+          : '';
+
+        let controlHtml = '';
+        if (item.type === 'toggle') {
+          const checked = item.current ? 'checked' : '';
+          controlHtml = `
+            <label class="switch">
+              <input type="checkbox" class="tuning-toggle-input" data-setting-id="${escapeHtml(item.id)}" ${checked} ${disabledAttr}>
+              <span class="slider-toggle"></span>
+            </label>
+          `;
+        } else if (item.type === 'select') {
+          const optsHtml = (item.options || []).map(opt => {
+            const selected = String(opt.value) === String(item.current) ? 'selected' : '';
+            return `<option value="${escapeHtml(String(opt.value))}" ${selected}>${escapeHtml(opt.label)}</option>`;
+          }).join('');
+          controlHtml = `
+            <select class="tuning-select tuning-select-input" data-setting-id="${escapeHtml(item.id)}" ${disabledAttr}>
+              ${optsHtml}
+            </select>
+          `;
+        }
+
+        return `
+          <div class="tuning-item-row">
+            <div class="tuning-item-info">
+              <div class="tuning-item-title">
+                <span>${escapeHtml(item.label)}</span>
+                ${statusPill}${adminPill}${rebootPill}
+              </div>
+              <div class="tuning-item-desc">${escapeHtml(item.desc)}</div>
+            </div>
+            <div class="tuning-item-control">${controlHtml}</div>
+          </div>
+        `;
+      }).join('');
+
+      return `
+        <div class="card tuning-group-card">
+          <div class="tuning-group-head">
+            <div>
+              <h4>${escapeHtml(group.title)}</h4>
+              <p>${escapeHtml(group.subtitle)}</p>
+            </div>
+            <span class="badge" style="background:rgba(16,185,129,0.12);color:var(--success);">${optCount}/${items.length} tối ưu</span>
+          </div>
+          <div class="tuning-items-list">${itemsHtml}</div>
+        </div>
+      `;
+    }).join('');
+
+    groupsContainer.querySelectorAll('.tuning-toggle-input').forEach(el => {
+      el.addEventListener('change', () => {
+        applySingleTuning(el.getAttribute('data-setting-id'), el.checked);
+      });
+    });
+
+    groupsContainer.querySelectorAll('.tuning-select-input').forEach(el => {
+      el.addEventListener('change', () => {
+        applySingleTuning(el.getAttribute('data-setting-id'), Number(el.value));
+      });
+    });
+  }
+
+  const appsContainer = document.getElementById('tuning-offload-apps-container');
+  if (appsContainer) {
+    const apps = data.offload_apps || [];
+    if (apps.length === 0) {
+      appsContainer.innerHTML = `<div style="color:var(--text-muted);font-size:0.84rem;">Chưa phát hiện ứng dụng nền nào cần điều hướng GPU.</div>`;
+    } else {
+      appsContainer.innerHTML = apps.map(app => `
+        <div class="tuning-offload-card" title="${escapeHtml(app.path)}">
+          <div class="tuning-offload-meta">
+            <div class="tuning-offload-name">${escapeHtml(app.name)}</div>
+            <div class="tuning-offload-sub">${app.is_igpu ? 'Intel iGPU (Power Saving)' : 'Mặc định Windows'} • ${escapeHtml(app.exe_name)}</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" class="tuning-offload-toggle" data-app-path="${escapeHtml(app.path)}" ${app.is_igpu ? 'checked' : ''}>
+            <span class="slider-toggle"></span>
+          </label>
+        </div>
+      `).join('');
+
+      appsContainer.querySelectorAll('.tuning-offload-toggle').forEach(el => {
+        el.addEventListener('change', () => {
+          toggleOffloadApp(el.getAttribute('data-app-path'), el.checked);
+        });
+      });
+    }
+  }
+}
+
+async function applySingleTuning(id, value) {
+  if (state.isTuningBusy) return;
+  state.isTuningBusy = true;
+  try {
+    const res = await fetch('/api/tuning/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, value })
+    });
+    const d = await res.json();
+    if (d.status) renderTuningView(d.status);
+    if (d.success) {
+      showToast(d.message || 'Đã cập nhật thiết lập.', d.requires_reboot ? 'warning' : 'success');
+    } else {
+      showToast(d.need_admin ? 'Cần chạy CleanPC với quyền Administrator để đổi mục này!' : (d.error || 'Không thể cập nhật thiết lập.'), 'warning');
+      await loadTuningStatus();
+    }
+  } catch (e) {
+    showToast(`Lỗi cập nhật: ${e.message}`, 'danger');
+    await loadTuningStatus();
+  } finally {
+    state.isTuningBusy = false;
+  }
+}
+
+async function toggleOffloadApp(path, enabled) {
+  if (state.isTuningBusy) return;
+  state.isTuningBusy = true;
+  try {
+    const res = await fetch('/api/tuning/toggle_app', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, enabled })
+    });
+    const d = await res.json();
+    if (d.status) renderTuningView(d.status);
+    if (d.success) {
+      showToast(d.message, 'success');
+    } else {
+      showToast(d.error || 'Không thể thay đổi GPU cho ứng dụng này.', 'warning');
+      await loadTuningStatus();
+    }
+  } catch (e) {
+    showToast(`Lỗi: ${e.message}`, 'danger');
+  } finally {
+    state.isTuningBusy = false;
+  }
+}
+
+async function runOptimizeAllTuning() {
+  if (state.isTuningBusy) return;
+  const btn = document.getElementById('btn-tuning-optimize-all');
+  const origHtml = btn ? btn.innerHTML : '';
+  state.isTuningBusy = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="pulse-dot"></span> Đang tối ưu toàn bộ...`;
+  }
+  try {
+    const res = await fetch('/api/tuning/optimize_all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const d = await res.json();
+    if (d.status) renderTuningView(d.status);
+    if (d.success) {
+      showToast(d.requires_reboot ? `${d.message} (Nên Restart máy 1 lần để HAGS hiệu lực)` : d.message, 'success');
+    } else if (d.partial) {
+      showToast(d.message, 'warning');
+    } else {
+      showToast(d.need_admin ? 'Cần quyền Administrator để tối ưu toàn bộ hệ thống!' : (d.message || 'Không thể tối ưu.'), 'warning');
+    }
+  } catch (e) {
+    showToast(`Lỗi tối ưu: ${e.message}`, 'danger');
+  } finally {
+    state.isTuningBusy = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+    }
+  }
+}
+
+async function runRestoreTuningDefaults() {
+  if (state.isTuningBusy) return;
+  const btn = document.getElementById('btn-tuning-restore');
+  const origHtml = btn ? btn.innerHTML : '';
+  state.isTuningBusy = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="pulse-dot"></span> Đang khôi phục...`;
+  }
+  try {
+    const res = await fetch('/api/tuning/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const d = await res.json();
+    if (d.status) renderTuningView(d.status);
+    showToast(d.message || 'Đã khôi phục cấu hình mặc định.', d.success ? 'success' : 'warning');
+  } catch (e) {
+    showToast(`Lỗi khôi phục: ${e.message}`, 'danger');
+  } finally {
+    state.isTuningBusy = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+    }
+  }
+}
 
