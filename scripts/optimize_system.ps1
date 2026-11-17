@@ -196,40 +196,40 @@ if ($Action -eq "Optimize") {
         Write-Host "[1/8] Da co ban sao luu cau hinh goc, bo qua buoc backup." -ForegroundColor DarkGray
     }
 
-    # 2. Power Plan Tuning (Cool & Responsive on AC, Quiet & Cool on Battery)
-    Write-Host "[2/8] Dang tinh chinh CPU, PCIe & Intel iGPU Power Plan..." -ForegroundColor Yellow
+    # 2. Power Plan Tuning (Unthrottled Intel Speed Shift HWP on AC & DC)
+    Write-Host "[2/8] Dang tinh chinh CPU, PCIe & Intel iGPU Power Plan (Khong gioi han)..." -ForegroundColor Yellow
     & powercfg -attributes SUB_PROCESSOR PERFBOOSTMODE -ATTRIB_HIDE 2>$null | Out-Null
-    # AC (Plugged in): 5% min idle, 100% max, Efficient Enabled (3) boost, PCIe ASPM Off (0), Intel iGPU Max Perf (2)
+    # AC (Plugged in): 5% min idle, 100% max, Efficient Aggressive (4) boost, PCIe ASPM Off (0), Intel iGPU Max Perf (2)
     & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 5
     & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100
-    & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE 3
+    & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE 4
     & powercfg /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM 0
     & powercfg /setacvalueindex SCHEME_CURRENT $intelGfxSub $intelGfxSet 2 2>$null | Out-Null
-    # DC (Battery): 5% min idle, 85% max, Boost Disabled (0), PCIe ASPM Max Power Savings (2), Intel iGPU Max Battery (0)
+    # DC (Battery): 5% min idle, 100% max, Efficient Aggressive (4) boost, PCIe ASPM Max Savings (2), Intel iGPU Max Battery (0)
     & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 5
-    & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 85
-    & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE 0
+    & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100
+    & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE 4
     & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM 2
     & powercfg /setdcvalueindex SCHEME_CURRENT $intelGfxSub $intelGfxSet 0 2>$null | Out-Null
     & powercfg /setactive SCHEME_CURRENT
-    Write-Host "      -> AC: Min 5% | Max 100% | Boost: Efficient | ASPM: Off | iGPU: Max Perf" -ForegroundColor Green
-    Write-Host "      -> DC: Min 5% | Max 85%  | Boost: Off       | ASPM: Max Sav | iGPU: Max Battery" -ForegroundColor Green
+    Write-Host "      -> AC: Min 5% | Max 100% | Boost: Efficient Aggressive | ASPM: Off | iGPU: Max Perf" -ForegroundColor Green
+    Write-Host "      -> DC: Min 5% | Max 100% | Boost: Efficient Aggressive | ASPM: Max Sav | iGPU: Max Battery" -ForegroundColor Green
 
-    # 3. Enable Hardware-Accelerated GPU Scheduling (HAGS)
-    Write-Host "[3/8] Dang bat Hardware-Accelerated GPU Scheduling (HwSchMode = 2)..." -ForegroundColor Yellow
-    Set-RegDword -Path $gfxDriversPath -Name "HwSchMode" -Value 2
-    Write-Host "      -> Da bat HAGS (co hieu luc sau khi khoi dong lai may)." -ForegroundColor Green
+    # 3. Disable Hardware-Accelerated GPU Scheduling (HwSchMode = 1) to avoid P0 idle lock & CPU Latency Hint heat
+    Write-Host "[3/8] Dang tat Hardware-Accelerated GPU Scheduling (HwSchMode = 1)..." -ForegroundColor Yellow
+    Set-RegDword -Path $gfxDriversPath -Name "HwSchMode" -Value 1
+    Write-Host "      -> Da dat HAGS = OFF (co hieu luc sau khi khoi dong lai may)." -ForegroundColor Green
 
-    # 4. Enable Windows Game Mode & Disable background Game DVR recording
-    Write-Host "[4/8] Dang bat Game Mode & tat quay nen Game DVR..." -ForegroundColor Yellow
-    Set-RegDword -Path $gameBarPath -Name "AutoGameModeEnabled" -Value 1
-    Set-RegDword -Path $gameBarPath -Name "AllowAutoGameMode" -Value 1
+    # 4. Keep Windows Game Mode OFF (let Intel Thread Director schedule P/E cores coolly) & Disable Game DVR
+    Write-Host "[4/8] Dang tat Game Mode & tat quay nen Game DVR..." -ForegroundColor Yellow
+    Set-RegDword -Path $gameBarPath -Name "AutoGameModeEnabled" -Value 0
+    Set-RegDword -Path $gameBarPath -Name "AllowAutoGameMode" -Value 0
     Set-RegDword -Path $gameCfgPath -Name "GameDVR_Enabled" -Value 0
     Set-RegDword -Path $gameDvrPath -Name "AppCaptureEnabled" -Value 0
     $existingDxGlobal = Get-RegValueOrNull -Path $gpuPrefPath -Name "DirectXUserGlobalSettings"
     $mergedDxGlobal = Merge-DxGlobalSettings -Existing $existingDxGlobal
     Set-RegString -Path $gpuPrefPath -Name "DirectXUserGlobalSettings" -Value $mergedDxGlobal
-    Write-Host "      -> Game Mode: ON | Game DVR: OFF | $mergedDxGlobal" -ForegroundColor Green
+    Write-Host "      -> Game Mode: OFF | Game DVR: OFF | $mergedDxGlobal" -ForegroundColor Green
 
     # 5. Disable Windows Transparency & UWP Background Apps
     Write-Host "[5/8] Dang tat hieu ung trong suot & app UWP chay nen..." -ForegroundColor Yellow
@@ -244,11 +244,47 @@ if ($Action -eq "Optimize") {
     Set-RegDword -Path $chromePolicyPath -Name "BackgroundModeEnabled" -Value 0
     Write-Host "      -> Edge Startup Boost & Chrome/Edge Background Mode: OFF" -ForegroundColor Green
 
-    # 7. Route browsers & background utilities to Intel Iris Xe (Power Saving) so RTX 3060 stays cool when idle
-    Write-Host "[7/8] Dang gan uu tien iGPU (tiet kiem dien) cho trinh duyet, Discord, IDE & app nen..." -ForegroundColor Yellow
+    # 7. Route browsers & background utilities to Intel Iris Xe (Power Saving), and FORCE Games to NVIDIA RTX 3060 (High Performance)
+    Write-Host "[7/8] Dang tach iGPU cho app nen va ep 100% Game chay card roi RTX 3060..." -ForegroundColor Yellow
+    $safeIgpuNames = @("chrome.exe", "msedge.exe", "browser.exe", "brave.exe", "opera.exe", "code.exe", "antigravity.exe", "idman.exe", "idmlite.exe", "discord.exe", "msedgewebview2.exe", "steamwebhelper.exe")
     foreach ($exe in $appPaths) {
         Set-RegString -Path $gpuPrefPath -Name $exe -Value "GpuPreference=1;"
         Write-Host "      -> iGPU Power Saving: $(Split-Path -Leaf $exe)" -ForegroundColor Gray
+    }
+
+    if (Test-Path $gpuPrefPath) {
+        $prefProps = (Get-Item -Path $gpuPrefPath).Property
+        foreach ($propName in $prefProps) {
+            if ($propName -match "\.exe$") {
+                $baseName = (Split-Path -Leaf $propName).ToLowerInvariant()
+                if ($safeIgpuNames -notcontains $baseName) {
+                    $curVal = Get-RegValueOrNull -Path $gpuPrefPath -Name $propName
+                    if ($curVal -match "GpuPreference=1") {
+                        Set-RegString -Path $gpuPrefPath -Name $propName -Value "GpuPreference=2;"
+                        Write-Host "      -> Fix Game sang RTX 3060: $baseName" -ForegroundColor Cyan
+                    }
+                }
+            }
+        }
+    }
+
+    $gameExes = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    $knownGames = @("D:\NG Launcher\Mod Library\New Legacy\GTA5.exe")
+    foreach ($g in $knownGames) {
+        if (Test-Path $g) { [void]$gameExes.Add($g) }
+    }
+    Get-ChildItem "HKCU:\System\GameConfigStore\Children" -ErrorAction SilentlyContinue | ForEach-Object {
+        $gPath = (Get-ItemProperty -Path $_.PSPath -Name "MatchedExeFullPath" -ErrorAction SilentlyContinue).MatchedExeFullPath
+        if ($gPath -and (Test-Path $gPath)) {
+            $gBase = (Split-Path -Leaf $gPath).ToLowerInvariant()
+            if ($safeIgpuNames -notcontains $gBase) {
+                [void]$gameExes.Add($gPath)
+            }
+        }
+    }
+    foreach ($gExe in $gameExes) {
+        Set-RegString -Path $gpuPrefPath -Name $gExe -Value "GpuPreference=2;"
+        Write-Host "      -> RTX 3060 High Perf: $(Split-Path -Leaf $gExe)" -ForegroundColor Green
     }
 
     # 8. Optimize NVIDIA Control Panel Global Profile via NVAPI DRS
@@ -264,7 +300,7 @@ if ($Action -eq "Optimize") {
     Write-Host ""
     Write-Host "=====================================================================" -ForegroundColor Green
     Write-Host " HOAN TAT TOI UU TOAN BO HE THONG & NVIDIA!" -ForegroundColor Green
-    Write-Host " 1. Khoi dong lai may (Restart) 1 lan de HAGS (HwSchMode=2) va Optimus" -ForegroundColor White
+    Write-Host " 1. Khoi dong lai may (Restart) 1 lan de HAGS (HwSchMode=1) va Optimus" -ForegroundColor White
     Write-Host "    cap nhat day du cho cac tien trinh desktop." -ForegroundColor White
     Write-Host " 2. Neu muon hoan tac ve nhu cu, chay file: restore_system_defaults.bat" -ForegroundColor White
     Write-Host "=====================================================================" -ForegroundColor Green

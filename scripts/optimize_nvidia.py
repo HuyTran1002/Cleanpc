@@ -59,20 +59,23 @@ class NVDRS_SETTING(ctypes.Structure):
 
 NVDRS_SETTING_VER = (1 << 16) | ctypes.sizeof(NVDRS_SETTING)
 
-# Verified setting IDs from the installed nvapi64.dll driver
+# Verified setting IDs from the installed nvapi64.dll driver (Unthrottled Cool-Gaming Profile)
 OPTIMAL_SETTINGS = [
     # (setting_id, description, optimal_dword)
     (0x1057EB71, "Power management mode -> Normal (5)", 5),
-    (0x10F9DC80, "Optimus flags -> Auto-select (16)", 16),
-    (0x10F9DC81, "Enable application for Optimus -> Auto-select (16)", 16),
-    (0x10835002, "Max Frame Rate -> 162 FPS (match 165Hz panel)", 162),
-    (0x10835016, "Background Application Max Frame Rate -> 30 FPS", 30),
-    (0x007BA09E, "Low Latency Mode (Max pre-rendered frames) -> On (1)", 1),
+    (0x10F9DC80, "Optimus flags -> Prefer NVIDIA GPU (1)", 1),
+    (0x10F9DC81, "Enable application for Optimus -> Prefer NVIDIA GPU (1)", 1),
     (0x00CE2691, "Texture filtering - Quality -> Performance (10)", 10),
     (0x00E73211, "Texture filtering - Anisotropic sample optimization -> On (1)", 1),
     (0x002ECAF2, "Texture filtering - Trilinear optimization -> On (1)", 1),
     (0x0064B541, "Preferred refresh rate -> Highest available (1)", 1),
     (0x00A879CF, "Vertical Sync -> Use 3D application setting", 1620202130),
+]
+
+DELETE_ON_OPTIMIZE = [
+    (0x10835002, "Max Frame Rate -> Off (Unthrottled)"),
+    (0x10835016, "Background Application Max Frame Rate -> Off (Unthrottled)"),
+    (0x007BA09E, "Low Latency Mode -> Off (Driver default)"),
 ]
 
 
@@ -210,22 +213,7 @@ def _detect_max_refresh_hz() -> int:
 
 
 def get_optimal_settings() -> list:
-    hz = _detect_max_refresh_hz()
-    rec_fps = (hz - 3) if hz >= 75 else (hz if hz > 0 else 162)
-    hz_lbl = hz or 165
-    return [
-        (0x1057EB71, "Power management mode -> Normal (5)", 5),
-        (0x10F9DC80, "Optimus flags -> Auto-select (16)", 16),
-        (0x10F9DC81, "Enable application for Optimus -> Auto-select (16)", 16),
-        (0x10835002, f"Max Frame Rate -> {rec_fps} FPS (match {hz_lbl}Hz panel)", rec_fps),
-        (0x10835016, "Background Application Max Frame Rate -> 30 FPS", 30),
-        (0x007BA09E, "Low Latency Mode (Max pre-rendered frames) -> On (1)", 1),
-        (0x00CE2691, "Texture filtering - Quality -> Performance (10)", 10),
-        (0x00E73211, "Texture filtering - Anisotropic sample optimization -> On (1)", 1),
-        (0x002ECAF2, "Texture filtering - Trilinear optimization -> On (1)", 1),
-        (0x0064B541, "Preferred refresh rate -> Highest available (1)", 1),
-        (0x00A879CF, "Vertical Sync -> Use 3D application setting", 1620202130),
-    ]
+    return list(OPTIMAL_SETTINGS)
 
 
 def optimize():
@@ -235,12 +223,18 @@ def optimize():
             backup = {}
             for sid, desc, _ in settings:
                 backup[hex(sid)] = drs.get_dword(sid)
+            for sid, desc in DELETE_ON_OPTIMIZE:
+                backup[hex(sid)] = drs.get_dword(sid)
             with open(BACKUP_FILE, "w", encoding="utf-8") as f:
                 json.dump(backup, f, indent=2)
             print(f"      -> Da sao luu cau hinh NVIDIA goc tai: {BACKUP_FILE}")
 
         for sid, desc, val in settings:
             drs.set_dword(sid, val)
+            print(f"      -> {desc}")
+
+        for sid, desc in DELETE_ON_OPTIMIZE:
+            drs.delete_setting(sid)
             print(f"      -> {desc}")
 
         drs.save()
@@ -251,6 +245,8 @@ def restore():
     with NvDrsClient() as drs:
         if not os.path.exists(BACKUP_FILE):
             for sid, _, _ in OPTIMAL_SETTINGS:
+                drs.delete_setting(sid)
+            for sid, _ in DELETE_ON_OPTIMIZE:
                 drs.delete_setting(sid)
             drs.save()
             print("      -> Da xoa cac ghi de NVIDIA ve mac dinh driver.")

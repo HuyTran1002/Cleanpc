@@ -2468,6 +2468,13 @@ def _set_powercfg_pair(setting_key: str, ac=None, dc=None):
     _run_powercfg(["/setactive", "SCHEME_CURRENT"])
 
 
+_SAFE_IGPU_OFFLOAD_EXES = {
+    "chrome.exe", "msedge.exe", "browser.exe", "brave.exe", "opera.exe",
+    "code.exe", "antigravity.exe", "idman.exe", "idmlite.exe",
+    "discord.exe", "msedgewebview2.exe", "steamwebhelper.exe",
+}
+
+
 def _discover_offload_apps() -> list:
     """Detect installed browsers, IDEs, Discord, WebView2, and downloaders for iGPU routing."""
     local_app = os.environ.get("LOCALAPPDATA", "")
@@ -2499,7 +2506,7 @@ def _discover_offload_apps() -> list:
             if os.path.isfile(path):
                 found[path.lower()] = (label, path)
 
-    # Also read already configured DirectX UserGpuPreferences keys so custom entries show up
+    # Read UserGpuPreferences only for known safe 2D/background apps (never hijack games onto iGPU)
     import winreg
     existing_prefs = {}
     try:
@@ -2512,7 +2519,11 @@ def _discover_offload_apps() -> list:
                     idx += 1
                     if name.lower().endswith(".exe"):
                         existing_prefs[name.lower()] = (name, str(val))
-                        if name.lower() not in found and os.path.isfile(name):
+                        if (
+                            name.lower() not in found
+                            and os.path.basename(name).lower() in _SAFE_IGPU_OFFLOAD_EXES
+                            and os.path.isfile(name)
+                        ):
                             found[name.lower()] = (os.path.basename(name), name)
                 except OSError:
                     break
@@ -2531,6 +2542,65 @@ def _discover_offload_apps() -> list:
             "is_igpu": is_igpu,
         })
     return apps
+
+
+def _ensure_games_high_perf_gpu() -> int:
+    """Route detected games to High-Performance dGPU (GpuPreference=2) and fix misrouted game EXEs."""
+    import winreg
+    updated = 0
+
+    try:
+        _, subkey = _REG_PATHS["gpu_pref"]
+        to_fix = []
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_READ) as key:
+            idx = 0
+            while True:
+                try:
+                    name, val, _ = winreg.EnumValue(key, idx)
+                    idx += 1
+                    if name.lower().endswith(".exe"):
+                        exe_base = os.path.basename(name).lower()
+                        if exe_base not in _SAFE_IGPU_OFFLOAD_EXES and "gpupreference=1" in str(val).lower():
+                            to_fix.append(name)
+                except OSError:
+                    break
+        for exe_path in to_fix:
+            _reg_write_str("gpu_pref", exe_path, "GpuPreference=2;")
+            updated += 1
+    except OSError:
+        pass
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"System\GameConfigStore\Children", 0, winreg.KEY_READ) as root_key:
+            idx = 0
+            while True:
+                try:
+                    sub = winreg.EnumKey(root_key, idx)
+                    idx += 1
+                    with winreg.OpenKey(root_key, sub, 0, winreg.KEY_READ) as sk:
+                        try:
+                            exe_path, _ = winreg.QueryValueEx(sk, "MatchedExeFullPath")
+                        except OSError:
+                            continue
+                    if not exe_path:
+                        continue
+                    exe_str = str(exe_path).strip()
+                    exe_base = os.path.basename(exe_str).lower()
+                    if (
+                        exe_base.endswith(".exe")
+                        and exe_base not in _SAFE_IGPU_OFFLOAD_EXES
+                        and os.path.isfile(exe_str)
+                    ):
+                        cur_pref = str(_reg_read("gpu_pref", exe_str, "") or "")
+                        if "GpuPreference=2;" not in cur_pref:
+                            _reg_write_str("gpu_pref", exe_str, "GpuPreference=2;")
+                            updated += 1
+                except OSError:
+                    break
+    except OSError:
+        pass
+
+    return updated
 
 
 def _get_display_refresh_hz() -> int:
@@ -2682,12 +2752,12 @@ def _build_fps_options(refresh_hz: int, rec_fps: int, current_val: int) -> list:
     options = []
     for val in sorted(base_values):
         if val == 0:
-            label = "Tắt (Không giới hạn)"
+            label = "Tắt (Không giới hạn - Khuyên dùng)"
         elif val == 60:
             label = "60 FPS (Siêu mát)"
         elif val == rec_fps:
             hz_lbl = refresh_hz or (rec_fps + 3)
-            label = f"{val} FPS (Khuyên dùng {hz_lbl}Hz - G-Sync mượt)"
+            label = f"{val} FPS ({hz_lbl}Hz G-Sync)"
         else:
             label = f"{val} FPS"
         options.append({"value": val, "label": label})
@@ -2810,13 +2880,16 @@ def _apply_setting_action(setting_id: str, value) -> dict:
     requires_reboot = False
 
     # NVIDIA Global Profile settings
-    if setting_id in ("nv_power_mode", "nv_max_fps", "nv_bg_fps", "nv_tex_quality", "nv_vsync"):
+    if setting_id in ("nv_max_fps", "nv_bg_fps"):
+        iv = int(value)
+        _write_nvdrs_updates({_NVIDIA_PROFILE_KEYS[setting_id]: iv if iv > 0 else None})
+    elif setting_id in ("nv_power_mode", "nv_tex_quality", "nv_vsync"):
         _write_nvdrs_updates({_NVIDIA_PROFILE_KEYS[setting_id]: int(value)})
     elif setting_id == "nv_optimus":
-        val = 16 if bool(value) else 1
+        val = 1 if bool(value) else 16
         _write_nvdrs_updates({0x10F9DC80: val, 0x10F9DC81: val})
     elif setting_id == "nv_low_latency":
-        _write_nvdrs_updates({0x007BA09E: 1 if bool(value) else 0})
+        _write_nvdrs_updates({0x007BA09E: 1 if bool(value) else None})
     elif setting_id == "nv_tex_opt":
         val = 1 if bool(value) else 0
         _write_nvdrs_updates({0x00E73211: val, 0x002ECAF2: val})
@@ -2827,7 +2900,7 @@ def _apply_setting_action(setting_id: str, value) -> dict:
     elif setting_id == "cpu_boost_ac":
         _set_powercfg_pair("PERFBOOSTMODE", ac=int(value))
     elif setting_id == "cpu_boost_dc":
-        _set_powercfg_pair("PERFBOOSTMODE", dc=(0 if bool(value) else 2))
+        _set_powercfg_pair("PERFBOOSTMODE", dc=(0 if bool(value) else 4))
     elif setting_id == "cpu_max_dc":
         _set_powercfg_pair("PROCTHROTTLEMAX", dc=int(value))
     elif setting_id == "pcie_aspm":
@@ -2874,20 +2947,20 @@ def _apply_setting_action(setting_id: str, value) -> dict:
 _OPTIMAL_PROFILE_MAP = {
     "nv_power_mode": 5,
     "nv_optimus": True,
-    "nv_max_fps": 162,
-    "nv_bg_fps": 30,
-    "nv_low_latency": True,
+    "nv_max_fps": 0,
+    "nv_bg_fps": 0,
+    "nv_low_latency": False,
     "nv_tex_quality": 10,
     "nv_tex_opt": True,
     "nv_refresh_rate": True,
     "nv_vsync": 1620202130,
-    "cpu_boost_ac": 3,
-    "cpu_boost_dc": True,
-    "cpu_max_dc": 85,
+    "cpu_boost_ac": 4,
+    "cpu_boost_dc": False,
+    "cpu_max_dc": 100,
     "pcie_aspm": True,
     "intel_igpu_power": True,
-    "win_hags": True,
-    "win_gamemode": True,
+    "win_hags": False,
+    "win_gamemode": False,
     "win_gamedvr": True,
     "win_vrr": True,
     "win_transparency": True,
@@ -2912,7 +2985,6 @@ def get_system_tuning_status() -> dict:
         return int(entry["value"]) if entry is not None else default
 
     cur_max_fps = _nv_val(0x10835002, 0)
-    acceptable_max_fps = {rec_fps} | ({refresh_hz} if refresh_hz > 0 else set())
 
     dx_global = str(_reg_read("gpu_pref", "DirectXUserGlobalSettings", "") or "")
     hags_val = _reg_read("gfx_drivers", "HwSchMode", 1)
@@ -2947,38 +3019,38 @@ def get_system_tuning_status() -> dict:
         },
         {
             "id": "nv_optimus", "group": "nvidia", "type": "toggle", "requires_admin": True, "available": nv_ok,
-            "label": "Chuyển mạch GPU thông minh (Optimus Auto-Select)",
-            "desc": "Đặt Profile 3D về Auto-Select (lưu ý: nếu NVIDIA Control Panel → Manage Display mode đang khóa 'NVIDIA GPU only', cần chuyển về Automatic Select / Optimus tại đó).",
-            "current": _nv_val(0x10F9DC80, 16) == 16 and _nv_val(0x10F9DC81, 16) == 16, "optimal": True,
-            "is_optimal": nv_ok and _nv_val(0x10F9DC80, 16) == 16 and _nv_val(0x10F9DC81, 16) == 16,
+            "label": "Ưu tiên card rời NVIDIA cho Game (Optimus dGPU Prefer)",
+            "desc": "Đặt Profile 3D ưu tiên RTX 3060 cho toàn bộ game, trong khi trình duyệt và app nền đã tách riêng sang iGPU.",
+            "current": _nv_val(0x10F9DC80, 1) == 1 and _nv_val(0x10F9DC81, 1) == 1, "optimal": True,
+            "is_optimal": nv_ok and _nv_val(0x10F9DC80, 1) == 1 and _nv_val(0x10F9DC81, 1) == 1,
         },
         {
             "id": "nv_max_fps", "group": "nvidia", "type": "select", "requires_admin": True, "available": nv_ok,
             "label": "Giới hạn FPS tối đa (Max Frame Rate)",
-            "desc": f"Tự tính theo màn hình {refresh_hz or 165}Hz ({rec_fps} FPS) để giảm nhiệt thừa mà vẫn giữ G-Sync/VRR mượt tuyệt đối.",
-            "current": cur_max_fps, "optimal": rec_fps,
-            "is_optimal": nv_ok and cur_max_fps in acceptable_max_fps,
+            "desc": "Không giới hạn FPS ở tầng driver (để game tự do chạy tối đa hoặc theo thiết lập trong từng game).",
+            "current": cur_max_fps, "optimal": 0,
+            "is_optimal": nv_ok and cur_max_fps == 0,
             "options": _build_fps_options(refresh_hz, rec_fps, cur_max_fps),
         },
         {
             "id": "nv_bg_fps", "group": "nvidia", "type": "select", "requires_admin": True, "available": nv_ok,
             "label": "Giới hạn FPS khi ẩn game / Alt-Tab (Background FPS)",
-            "desc": "Hạ FPS xuống 30 khi bạn chuyển sang Chrome hoặc màn hình chờ để hạ nhiệt tức thì.",
-            "current": _nv_val(0x10835016, 0), "optimal": 30,
-            "is_optimal": nv_ok and 0 < _nv_val(0x10835016, 0) <= 30,
+            "desc": "Tắt giới hạn để không khóa FPS khi Alt-Tab (hoặc chọn 30 FPS nếu muốn hạ nhiệt khi ẩn game).",
+            "current": _nv_val(0x10835016, 0), "optimal": 0,
+            "is_optimal": nv_ok and _nv_val(0x10835016, 0) == 0,
             "options": [
-                {"value": 0, "label": "Tắt"},
+                {"value": 0, "label": "Tắt (Không giới hạn - Khuyên dùng)"},
                 {"value": 20, "label": "20 FPS (Siêu mát)"},
-                {"value": 30, "label": "30 FPS (Khuyên dùng)"},
+                {"value": 30, "label": "30 FPS"},
                 {"value": 60, "label": "60 FPS"},
             ],
         },
         {
             "id": "nv_low_latency", "group": "nvidia", "type": "toggle", "requires_admin": True, "available": nv_ok,
             "label": "NVIDIA Low Latency Mode (Giảm độ trễ chuột/phím)",
-            "desc": "Giảm hàng đợi khung hình của CPU để phản hồi nhạy hơn trong game eSports.",
-            "current": _nv_val(0x007BA09E, 0) == 1, "optimal": True,
-            "is_optimal": nv_ok and _nv_val(0x007BA09E, 0) == 1,
+            "desc": "Tắt để giữ hàng đợi frame tiêu chuẩn, giảm tải đồng bộ cho CPU giúp hạ nhiệt khi chơi FPS cao.",
+            "current": _nv_val(0x007BA09E, 0) == 1, "optimal": False,
+            "is_optimal": nv_ok and _nv_val(0x007BA09E, 0) == 0,
         },
         {
             "id": "nv_tex_quality", "group": "nvidia", "type": "select", "requires_admin": True, "available": nv_ok,
@@ -3023,33 +3095,33 @@ def get_system_tuning_status() -> dict:
         {
             "id": "cpu_boost_ac", "group": "power", "type": "select", "requires_admin": True, "available": p_boost_ac is not None,
             "label": "CPU Turbo Boost khi cắm sạc (AC)",
-            "desc": "Efficient Enabled giữ hiệu năng cao khi cần nhưng không ép xung nóng vô ích ở tác vụ nhẹ.",
-            "current": p_boost_ac if p_boost_ac is not None else 2, "optimal": 3,
-            "is_optimal": p_boost_ac == 3,
+            "desc": "Efficient Aggressive giữ đúng chuẩn Intel Speed Shift gốc: bung 100% xung nhịp khi cần, không khóa hay giới hạn CPU.",
+            "current": p_boost_ac if p_boost_ac is not None else 4, "optimal": 4,
+            "is_optimal": p_boost_ac == 4,
             "options": [
                 {"value": 0, "label": "Disabled (Siêu mát, không Boost)"},
-                {"value": 2, "label": "Aggressive (Mặc định - Dễ nóng)"},
-                {"value": 3, "label": "Efficient Enabled (Khuyên dùng - Mượt & Mát)"},
-                {"value": 4, "label": "Efficient Aggressive"},
+                {"value": 2, "label": "Aggressive"},
+                {"value": 3, "label": "Efficient Enabled"},
+                {"value": 4, "label": "Efficient Aggressive (Khuyên dùng - Không giới hạn)"},
             ],
         },
         {
             "id": "cpu_boost_dc", "group": "power", "type": "toggle", "requires_admin": True, "available": p_boost_dc is not None,
             "label": "Tắt CPU Turbo Boost khi dùng Pin (DC)",
-            "desc": "Giữ nhiệt độ laptop mát rượi và tăng đáng kể thời lượng pin khi không cắm sạc.",
-            "current": p_boost_dc == 0, "optimal": True,
-            "is_optimal": p_boost_dc == 0,
+            "desc": "Tắt mục này để giữ Turbo Boost hoạt động bình thường cả khi dùng Pin (không khóa CPU).",
+            "current": p_boost_dc == 0, "optimal": False,
+            "is_optimal": p_boost_dc is not None and p_boost_dc != 0,
         },
         {
             "id": "cpu_max_dc", "group": "power", "type": "select", "requires_admin": True, "available": p_max_dc is not None,
             "label": "Giới hạn hiệu năng CPU khi dùng Pin (DC)",
-            "desc": "Mức 85% đủ mượt cho công việc văn phòng & code mà giảm hẳn nhiệt độ tỏa ra.",
-            "current": p_max_dc if p_max_dc is not None else 100, "optimal": 85,
-            "is_optimal": p_max_dc is not None and p_max_dc <= 85,
+            "desc": "Giữ 100% công suất CPU khi dùng Pin (không giới hạn hiệu năng).",
+            "current": p_max_dc if p_max_dc is not None else 100, "optimal": 100,
+            "is_optimal": p_max_dc == 100,
             "options": [
                 {"value": 75, "label": "75% (Pin lâu nhất)"},
-                {"value": 85, "label": "85% (Khuyên dùng)"},
-                {"value": 100, "label": "100% (Mặc định)"},
+                {"value": 85, "label": "85%"},
+                {"value": 100, "label": "100% (Không giới hạn - Khuyên dùng)"},
             ],
         },
         {
@@ -3071,16 +3143,16 @@ def get_system_tuning_status() -> dict:
         {
             "id": "win_hags", "group": "windows", "type": "toggle", "requires_admin": True, "available": True, "requires_reboot": True,
             "label": "Hardware-Accelerated GPU Scheduling (HAGS)",
-            "desc": "Giảm tải lập lịch khung hình cho CPU & hỗ trợ DLSS Frame Gen (cần khởi động lại nếu thay đổi).",
-            "current": hags_val == 2, "optimal": True,
-            "is_optimal": hags_val == 2,
+            "desc": "Tắt HAGS giúp RTX 3060 hạ xung nghỉ sâu hơn (tránh kẹt P0 22W) và không ép điện áp CPU qua Latency Hint (cần Restart nếu thay đổi).",
+            "current": hags_val == 2, "optimal": False,
+            "is_optimal": hags_val != 2,
         },
         {
             "id": "win_gamemode", "group": "windows", "type": "toggle", "requires_admin": False, "available": True,
             "label": "Windows Game Mode",
-            "desc": "Ưu tiên tài nguyên CPU/GPU cho game và tạm hoãn Windows Update khi đang chơi.",
-            "current": game_mode_val == 1, "optimal": True,
-            "is_optimal": game_mode_val == 1,
+            "desc": "Tắt Game Mode để bộ lập lịch Intel Thread Director tự điều phối nhân P-core/E-core mát mẻ hơn.",
+            "current": game_mode_val == 1, "optimal": False,
+            "is_optimal": game_mode_val == 0,
         },
         {
             "id": "win_gamedvr", "group": "windows", "type": "toggle", "requires_admin": False, "available": True,
@@ -3195,19 +3267,18 @@ def apply_optimal_tuning_profile() -> dict:
     requires_reboot = False
 
     # Batch NVDRS settings into a single write+save transaction for speed & atomicity
-    rec_fps = _recommended_max_fps(_get_display_refresh_hz())
     nv_batch = {
-        0x1057EB71: 5,
-        0x10F9DC80: 16,
-        0x10F9DC81: 16,
-        0x10835002: rec_fps,
-        0x10835016: 30,
-        0x007BA09E: 1,
-        0x00CE2691: 10,
-        0x00E73211: 1,
-        0x002ECAF2: 1,
-        0x0064B541: 1,
-        0x00A879CF: 1620202130,
+        0x1057EB71: 5,           # Power management: Normal (mát khi nghỉ, bung 100% khi chơi game)
+        0x10F9DC80: 1,           # Optimus flags: Prefer NVIDIA GPU for 3D games
+        0x10F9DC81: 1,           # Enable app for Optimus: Prefer NVIDIA GPU
+        0x10835002: None,        # Max Frame Rate: OFF (Không giới hạn FPS)
+        0x10835016: None,        # Background Max FPS: OFF (Không giới hạn)
+        0x007BA09E: None,        # Low Latency Mode: OFF (Giữ hàng đợi frame chuẩn, mát CPU)
+        0x00CE2691: 10,          # Texture filtering Quality: Performance
+        0x00E73211: 1,           # Anisotropic sample optimization: On
+        0x002ECAF2: 1,           # Trilinear optimization: On
+        0x0064B541: 1,           # Preferred refresh rate: Highest available (165Hz)
+        0x00A879CF: 1620202130,  # Vertical Sync: Use 3D application setting
     }
     try:
         nv_ok, _ = _read_nvdrs_raw([0x1057EB71])
@@ -3226,6 +3297,11 @@ def apply_optimal_tuning_profile() -> dict:
                 requires_reboot = True
         except Exception as e:
             errors.append(f"{sid}: {e}")
+
+    try:
+        applied += _ensure_games_high_perf_gpu()
+    except Exception as e:
+        errors.append(f"game_gpu_pref: {e}")
 
     for app in _discover_offload_apps():
         try:
