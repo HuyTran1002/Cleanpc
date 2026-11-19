@@ -172,6 +172,8 @@ if ($Action -eq "Optimize") {
                 PROCTHROTTLEMIN = Get-PowerCfgValues -Subgroup "SUB_PROCESSOR" -Setting "PROCTHROTTLEMIN"
                 PROCTHROTTLEMAX = Get-PowerCfgValues -Subgroup "SUB_PROCESSOR" -Setting "PROCTHROTTLEMAX"
                 PERFBOOSTMODE   = Get-PowerCfgValues -Subgroup "SUB_PROCESSOR" -Setting "PERFBOOSTMODE"
+                PROCFREQMAX     = Get-PowerCfgValues -Subgroup "SUB_PROCESSOR" -Setting "75b0ae3f-bce0-45a7-8c89-c9611c25e100"
+                PROCFREQMAX1    = Get-PowerCfgValues -Subgroup "SUB_PROCESSOR" -Setting "75b0ae3f-bce0-45a7-8c89-c9611c25e101"
                 ASPM            = Get-PowerCfgValues -Subgroup "SUB_PCIEXPRESS" -Setting "ASPM"
                 INTEL_GFX       = Get-PowerCfgValues -Subgroup $intelGfxSub -Setting $intelGfxSet
             }
@@ -196,24 +198,30 @@ if ($Action -eq "Optimize") {
         Write-Host "[1/8] Da co ban sao luu cau hinh goc, bo qua buoc backup." -ForegroundColor DarkGray
     }
 
-    # 2. Power Plan Tuning (Unthrottled Intel Speed Shift HWP on AC & DC)
-    Write-Host "[2/8] Dang tinh chinh CPU, PCIe & Intel iGPU Power Plan (Khong gioi han)..." -ForegroundColor Yellow
+    # 2. Power Plan Tuning (Sweet-spot 3800 MHz Turbo Cap on AC & DC to eliminate 97C voltage spikes)
+    Write-Host "[2/8] Dang tinh chinh CPU (Diem ngot 3800 MHz), PCIe & Intel iGPU Power Plan..." -ForegroundColor Yellow
     & powercfg -attributes SUB_PROCESSOR PERFBOOSTMODE -ATTRIB_HIDE 2>$null | Out-Null
-    # AC (Plugged in): 5% min idle, 100% max, Efficient Aggressive (4) boost, PCIe ASPM Off (0), Intel iGPU Max Perf (2)
+    & powercfg -attributes SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e100 -ATTRIB_HIDE 2>$null | Out-Null
+    & powercfg -attributes SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e101 -ATTRIB_HIDE 2>$null | Out-Null
+    # AC (Plugged in): 5% min idle, 100% max, Efficient Aggressive (4) boost, 3800 MHz cap, PCIe ASPM Off (0), Intel iGPU Max Perf (2)
     & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 5
     & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100
     & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE 4
+    & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e100 3800
+    & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e101 3800
     & powercfg /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM 0
     & powercfg /setacvalueindex SCHEME_CURRENT $intelGfxSub $intelGfxSet 2 2>$null | Out-Null
-    # DC (Battery): 5% min idle, 100% max, Efficient Aggressive (4) boost, PCIe ASPM Max Savings (2), Intel iGPU Max Battery (0)
+    # DC (Battery): 5% min idle, 100% max, Efficient Aggressive (4) boost, 3800 MHz cap, PCIe ASPM Max Savings (2), Intel iGPU Max Battery (0)
     & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 5
     & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100
     & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE 4
+    & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e100 3800
+    & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e101 3800
     & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM 2
     & powercfg /setdcvalueindex SCHEME_CURRENT $intelGfxSub $intelGfxSet 0 2>$null | Out-Null
     & powercfg /setactive SCHEME_CURRENT
-    Write-Host "      -> AC: Min 5% | Max 100% | Boost: Efficient Aggressive | ASPM: Off | iGPU: Max Perf" -ForegroundColor Green
-    Write-Host "      -> DC: Min 5% | Max 100% | Boost: Efficient Aggressive | ASPM: Max Sav | iGPU: Max Battery" -ForegroundColor Green
+    Write-Host "      -> AC: Min 5% | Max 100% | Boost: Efficient Aggressive | Cap: 3800 MHz | ASPM: Off" -ForegroundColor Green
+    Write-Host "      -> DC: Min 5% | Max 100% | Boost: Efficient Aggressive | Cap: 3800 MHz | ASPM: Max Sav" -ForegroundColor Green
 
     # 3. Disable Hardware-Accelerated GPU Scheduling (HwSchMode = 1) to avoid P0 idle lock & CPU Latency Hint heat
     Write-Host "[3/8] Dang tat Hardware-Accelerated GPU Scheduling (HwSchMode = 1)..." -ForegroundColor Yellow
@@ -329,6 +337,10 @@ elseif ($Action -eq "Restore") {
         & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100
         & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE 2
         & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE 2
+        & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e100 0
+        & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e100 0
+        & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e101 0
+        & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e101 0
         & powercfg /setacvalueindex SCHEME_CURRENT $intelGfxSub $intelGfxSet 1 2>$null | Out-Null
         & powercfg /setdcvalueindex SCHEME_CURRENT $intelGfxSub $intelGfxSet 1 2>$null | Out-Null
         & powercfg /setactive SCHEME_CURRENT
@@ -344,6 +356,14 @@ elseif ($Action -eq "Restore") {
     if ($null -ne $b.Power.PROCTHROTTLEMAX.DC) { & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX $b.Power.PROCTHROTTLEMAX.DC }
     if ($null -ne $b.Power.PERFBOOSTMODE.AC)   { & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE   $b.Power.PERFBOOSTMODE.AC }
     if ($null -ne $b.Power.PERFBOOSTMODE.DC)   { & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE   $b.Power.PERFBOOSTMODE.DC }
+    $freqAc  = if ($null -ne $b.Power.PROCFREQMAX.AC)  { $b.Power.PROCFREQMAX.AC }  else { 0 }
+    $freqDc  = if ($null -ne $b.Power.PROCFREQMAX.DC)  { $b.Power.PROCFREQMAX.DC }  else { 0 }
+    $freq1Ac = if ($null -ne $b.Power.PROCFREQMAX1.AC) { $b.Power.PROCFREQMAX1.AC } else { 0 }
+    $freq1Dc = if ($null -ne $b.Power.PROCFREQMAX1.DC) { $b.Power.PROCFREQMAX1.DC } else { 0 }
+    & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e100 $freqAc
+    & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e100 $freqDc
+    & powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e101 $freq1Ac
+    & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR 75b0ae3f-bce0-45a7-8c89-c9611c25e101 $freq1Dc
     if ($null -ne $b.Power.ASPM.AC)            { & powercfg /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM           $b.Power.ASPM.AC }
     if ($null -ne $b.Power.ASPM.DC)            { & powercfg /setdcvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM           $b.Power.ASPM.DC }
     if ($null -ne $b.Power.INTEL_GFX.AC)       { & powercfg /setacvalueindex SCHEME_CURRENT $intelGfxSub $intelGfxSet      $b.Power.INTEL_GFX.AC 2>$null | Out-Null }

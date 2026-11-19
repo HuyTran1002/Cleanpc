@@ -2328,6 +2328,8 @@ _POWER_SETTING_GUIDS = {
     "PROCTHROTTLEMIN": ("SUB_PROCESSOR", "893dee8e-2bef-41e0-89c6-b55d0929964c"),
     "PROCTHROTTLEMAX": ("SUB_PROCESSOR", "bc5038f7-23e0-4960-96da-33abaf5935ec"),
     "PERFBOOSTMODE": ("SUB_PROCESSOR", "be337238-0d82-4146-a960-4f3749d470c7"),
+    "PROCFREQMAX": ("SUB_PROCESSOR", "75b0ae3f-bce0-45a7-8c89-c9611c25e100"),
+    "PROCFREQMAX1": ("SUB_PROCESSOR", "75b0ae3f-bce0-45a7-8c89-c9611c25e101"),
     "ASPM": ("SUB_PCIEXPRESS", "ee12f906-d277-404b-b6da-e5fa1a576df5"),
     "INTEL_GFX": ("44f3beca-a7c0-460e-9df2-bb8b99e0cba6", "3619c3f2-afb2-4afc-b0e9-e7fef372de36"),
 }
@@ -2425,7 +2427,7 @@ def _run_powercfg(args: list, timeout: int = 5) -> str:
 
 def _query_powercfg_all() -> dict:
     """Parse current active scheme name and AC/DC values for tracked power settings in one call."""
-    out = _run_powercfg(["/q", "SCHEME_CURRENT"], timeout=6)
+    out = _run_powercfg(["/qh", "SCHEME_CURRENT"], timeout=6)
     scheme_name = "Balanced"
     m_scheme = re.search(r"Power Scheme GUID:\s*[0-9a-fA-F-]+\s*\((.+?)\)", out)
     if m_scheme:
@@ -2456,9 +2458,9 @@ def _query_powercfg_all() -> dict:
 
 def _set_powercfg_pair(setting_key: str, ac=None, dc=None):
     sub, guid = _POWER_SETTING_GUIDS[setting_key]
-    if setting_key == "PERFBOOSTMODE":
+    if setting_key in ("PERFBOOSTMODE", "PROCFREQMAX", "PROCFREQMAX1"):
         try:
-            _run_powercfg(["-attributes", "SUB_PROCESSOR", "PERFBOOSTMODE", "-ATTRIB_HIDE"])
+            _run_powercfg(["-attributes", "SUB_PROCESSOR", guid, "-ATTRIB_HIDE"])
         except Exception:
             pass
     if ac is not None:
@@ -2899,6 +2901,10 @@ def _apply_setting_action(setting_id: str, value) -> dict:
     # CPU, PCIe & Intel iGPU Power Plan
     elif setting_id == "cpu_boost_ac":
         _set_powercfg_pair("PERFBOOSTMODE", ac=int(value))
+    elif setting_id == "cpu_freq_cap":
+        mhz = max(0, int(value))
+        _set_powercfg_pair("PROCFREQMAX", ac=mhz, dc=mhz)
+        _set_powercfg_pair("PROCFREQMAX1", ac=mhz, dc=mhz)
     elif setting_id == "cpu_boost_dc":
         _set_powercfg_pair("PERFBOOSTMODE", dc=(0 if bool(value) else 4))
     elif setting_id == "cpu_max_dc":
@@ -2955,6 +2961,7 @@ _OPTIMAL_PROFILE_MAP = {
     "nv_refresh_rate": True,
     "nv_vsync": 1620202130,
     "cpu_boost_ac": 4,
+    "cpu_freq_cap": 3800,
     "cpu_boost_dc": False,
     "cpu_max_dc": 100,
     "pcie_aspm": True,
@@ -2999,6 +3006,7 @@ def get_system_tuning_status() -> dict:
 
     p_boost_ac = pvals["PERFBOOSTMODE"]["ac"]
     p_boost_dc = pvals["PERFBOOSTMODE"]["dc"]
+    p_freq_cap = pvals["PROCFREQMAX1"]["ac"] if pvals["PROCFREQMAX1"]["ac"] is not None else pvals["PROCFREQMAX"]["ac"]
     p_max_dc = pvals["PROCTHROTTLEMAX"]["dc"]
     p_aspm = pvals["ASPM"]
     p_igpu = pvals["INTEL_GFX"]
@@ -3103,6 +3111,20 @@ def get_system_tuning_status() -> dict:
                 {"value": 2, "label": "Aggressive"},
                 {"value": 3, "label": "Efficient Enabled"},
                 {"value": 4, "label": "Efficient Aggressive (Khuyên dùng - Không giới hạn)"},
+            ],
+        },
+        {
+            "id": "cpu_freq_cap", "group": "power", "type": "select", "requires_admin": True, "available": p_freq_cap is not None,
+            "label": "Trần xung nhịp Turbo CPU (P-Core & E-Core Max MHz)",
+            "desc": "Điểm ngọt 3800 MHz (3.8 GHz) giữ 100% tốc độ đa nhân & 200+ FPS nhưng cắt đỉnh điện áp 1.40V, chặn đứng cú vọt 97°C và Thermal Throttling.",
+            "current": p_freq_cap if p_freq_cap is not None else 0, "optimal": 3800,
+            "is_optimal": p_freq_cap in (3800, 3900, 4000),
+            "options": [
+                {"value": 0, "label": "Không giới hạn (5.0 GHz - Dễ vọt 97°C)"},
+                {"value": 3500, "label": "3500 MHz (3.5 GHz - Siêu mát 65–72°C)"},
+                {"value": 3800, "label": "3800 MHz (3.8 GHz - Điểm ngọt Khuyên dùng)"},
+                {"value": 4000, "label": "4000 MHz (4.0 GHz - Hiệu năng cao)"},
+                {"value": 4200, "label": "4200 MHz (4.2 GHz)"},
             ],
         },
         {
@@ -3359,10 +3381,15 @@ def restore_tuning_defaults() -> dict:
 
     if use_backup:
         for key in _POWER_SETTING_GUIDS:
-            pair = b.get("power", {}).get(key, {})
+            pair = (b.get("power") or {}).get(key) or {}
             if pair.get("ac") is not None or pair.get("dc") is not None:
                 try:
                     _set_powercfg_pair(key, ac=pair.get("ac"), dc=pair.get("dc"))
+                except Exception as e:
+                    errors.append(f"Power {key}: {e}")
+            elif key in ("PROCFREQMAX", "PROCFREQMAX1"):
+                try:
+                    _set_powercfg_pair(key, ac=0, dc=0)
                 except Exception as e:
                     errors.append(f"Power {key}: {e}")
 
@@ -3418,6 +3445,8 @@ def restore_tuning_defaults() -> dict:
             _set_powercfg_pair("PROCTHROTTLEMIN", ac=5, dc=5)
             _set_powercfg_pair("PROCTHROTTLEMAX", ac=100, dc=100)
             _set_powercfg_pair("PERFBOOSTMODE", ac=2, dc=2)
+            _set_powercfg_pair("PROCFREQMAX", ac=0, dc=0)
+            _set_powercfg_pair("PROCFREQMAX1", ac=0, dc=0)
             _set_powercfg_pair("ASPM", ac=1, dc=2)
             _set_powercfg_pair("INTEL_GFX", ac=1, dc=1)
         except Exception as e:
