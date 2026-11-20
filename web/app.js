@@ -18,7 +18,10 @@ const state = {
   duplicatePollTimer: null,
   tuningStatus: null,
   isTuningBusy: false,
-  tuningPollTimer: null
+  tuningPollTimer: null,
+  aiAnalysis: null,
+  selectedAiFindingIds: new Set(),
+  isAiBusy: false
 };
 
 // -----------------------------------------------------------------------------
@@ -135,6 +138,7 @@ function setupNavigation() {
 
       if (targetTabId === 'tab-tuning') {
         loadTuningStatus();
+        runAiSmartScan(true);
         if (!state.tuningPollTimer) {
           state.tuningPollTimer = setInterval(pollTuningTelemetry, 2000);
         }
@@ -214,6 +218,7 @@ async function loadSystemOverview() {
 
     // Render Drives Grid
     renderDrivesGrid(data.drives);
+    syncAdaptiveDriveTargets(data.drives);
 
     // Update Quick Clean Estimates
     document.getElementById('quick-recycle-estimate').textContent = data.recycle_bin.total_formatted;
@@ -229,6 +234,39 @@ async function loadSystemOverview() {
     console.warn(`[CleanPC] Đang chờ kết nối máy chủ (${err.message}), thử lại sau 1.5s...`);
     setTimeout(loadSystemOverview, 1500);
   }
+}
+
+let _driveTargetsInitialized = false;
+function syncAdaptiveDriveTargets(drives) {
+  const list = drives || [];
+  const roots = list.map(d => d.root).filter(Boolean);
+  const hasD = list.some(d => d.letter === 'D');
+  const allPaths = roots.length > 0 ? roots.join(', ') : 'C:\\';
+  const defaultLarge = hasD ? 'D:\\' : (roots[0] || 'C:\\');
+
+  if (!_driveTargetsInitialized) {
+    _driveTargetsInitialized = true;
+    const dupInput = document.getElementById('dup-target-dir');
+    if (dupInput) dupInput.value = allPaths;
+    const largeInput = document.getElementById('large-target-dir');
+    if (largeInput) largeInput.value = defaultLarge;
+  }
+
+  document.querySelectorAll('.quick-path-btn, .quick-large-path-btn').forEach(btn => {
+    const p = btn.getAttribute('data-path') || '';
+    if (p.includes(',')) {
+      if (roots.length <= 1) {
+        btn.style.display = 'none';
+      } else {
+        btn.style.display = '';
+        btn.setAttribute('data-path', allPaths);
+        const labels = list.map(d => `${d.letter}:`).join(' & ');
+        btn.textContent = `✨ Tất cả ổ (${labels})`;
+      }
+    } else if (p.toUpperCase().startsWith('D:')) {
+      btn.style.display = hasD ? '' : 'none';
+    }
+  });
 }
 
 function renderDrivesGrid(drives) {
@@ -939,6 +977,24 @@ function setupEventListeners() {
   // Performance & Cooling Tuning Buttons
   const btnTuningRefresh = document.getElementById('btn-tuning-refresh');
   if (btnTuningRefresh) btnTuningRefresh.addEventListener('click', () => loadTuningStatus(true));
+  const btnTuningAiScan = document.getElementById('btn-tuning-ai-scan');
+  if (btnTuningAiScan) btnTuningAiScan.addEventListener('click', () => runAiSmartScan(false));
+  const btnAiApplySelected = document.getElementById('btn-ai-apply-selected');
+  if (btnAiApplySelected) btnAiApplySelected.addEventListener('click', applyAiSmartRecommendations);
+  const btnAiSelectAll = document.getElementById('btn-ai-select-all');
+  if (btnAiSelectAll) {
+    btnAiSelectAll.addEventListener('click', () => {
+      (state.aiAnalysis?.findings || []).forEach(f => state.selectedAiFindingIds.add(f.id));
+      renderAiDiagnostic(state.aiAnalysis);
+    });
+  }
+  const btnAiDeselectAll = document.getElementById('btn-ai-deselect-all');
+  if (btnAiDeselectAll) {
+    btnAiDeselectAll.addEventListener('click', () => {
+      state.selectedAiFindingIds.clear();
+      renderAiDiagnostic(state.aiAnalysis);
+    });
+  }
   const btnTuningOptAll = document.getElementById('btn-tuning-optimize-all');
   if (btnTuningOptAll) btnTuningOptAll.addEventListener('click', runOptimizeAllTuning);
   const btnTuningRestore = document.getElementById('btn-tuning-restore');
@@ -1622,6 +1678,7 @@ window.__setCleanPCBgPaused = function setCleanPCBgPaused(paused) {
       }
     } else if (tabId === 'tab-tuning') {
       loadTuningStatus();
+      runAiSmartScan(true);
       if (!state.tuningPollTimer) {
         state.tuningPollTimer = setInterval(pollTuningTelemetry, 2000);
       }
@@ -1849,6 +1906,7 @@ async function applySingleTuning(id, value) {
     if (d.status) renderTuningView(d.status);
     if (d.success) {
       showToast(d.message || 'Đã cập nhật thiết lập.', d.requires_reboot ? 'warning' : 'success');
+      runAiSmartScan(true);
     } else {
       showToast(d.need_admin ? 'Cần chạy CleanPC với quyền Administrator để đổi mục này!' : (d.error || 'Không thể cập nhật thiết lập.'), 'warning');
       await loadTuningStatus();
@@ -1874,6 +1932,7 @@ async function toggleOffloadApp(path, enabled) {
     if (d.status) renderTuningView(d.status);
     if (d.success) {
       showToast(d.message, 'success');
+      runAiSmartScan(true);
     } else {
       showToast(d.error || 'Không thể thay đổi GPU cho ứng dụng này.', 'warning');
       await loadTuningStatus();
@@ -1886,29 +1945,33 @@ async function toggleOffloadApp(path, enabled) {
 }
 
 async function runOptimizeAllTuning() {
-  if (state.isTuningBusy) return;
   const btn = document.getElementById('btn-tuning-optimize-all');
+  if ((btn && btn.disabled) || state.isTuningBusy || state.isAiBusy) return;
   const origHtml = btn ? btn.innerHTML : '';
-  state.isTuningBusy = true;
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = `<span class="pulse-dot"></span> Đang tối ưu toàn bộ...`;
+    btn.innerHTML = `<span class="pulse-dot"></span> Đang phân tích & tối ưu AI...`;
   }
   try {
-    const res = await fetch('/api/tuning/optimize_all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    const d = await res.json();
-    if (d.status) renderTuningView(d.status);
-    if (d.success) {
-      showToast(d.requires_reboot ? `${d.message} (Nên Restart máy 1 lần để HAGS hiệu lực)` : d.message, 'success');
-    } else if (d.partial) {
-      showToast(d.message, 'warning');
-    } else {
-      showToast(d.need_admin ? 'Cần quyền Administrator để tối ưu toàn bộ hệ thống!' : (d.message || 'Không thể tối ưu.'), 'warning');
+    if (!state.aiAnalysis) {
+      await runAiSmartScan(true);
     }
+    const findings = (state.aiAnalysis && state.aiAnalysis.findings) || [];
+    if (findings.length === 0) {
+      showToast('Hệ thống đã ở trạng thái tối ưu hoàn hảo (100/100), không có điểm nghẽn nào cần sửa!', 'success');
+      return;
+    }
+    if (state.selectedAiFindingIds.size === 0) {
+      findings.forEach(f => state.selectedAiFindingIds.add(f.id));
+      document.querySelectorAll('.ai-finding-chk').forEach(chk => {
+        chk.checked = true;
+      });
+      updateAiSelectedCounter();
+    }
+    await applyAiSmartRecommendations();
   } catch (e) {
-    showToast(`Lỗi tối ưu: ${e.message}`, 'danger');
+    showToast(`Lỗi tối ưu AI: ${e.message}`, 'danger');
   } finally {
-    state.isTuningBusy = false;
     if (btn) {
       btn.disabled = false;
       btn.innerHTML = origHtml;
@@ -1930,6 +1993,7 @@ async function runRestoreTuningDefaults() {
     const d = await res.json();
     if (d.status) renderTuningView(d.status);
     showToast(d.message || 'Đã khôi phục cấu hình mặc định.', d.success ? 'success' : 'warning');
+    await runAiSmartScan(true);
   } catch (e) {
     showToast(`Lỗi khôi phục: ${e.message}`, 'danger');
   } finally {
@@ -1937,6 +2001,228 @@ async function runRestoreTuningDefaults() {
     if (btn) {
       btn.disabled = false;
       btn.innerHTML = origHtml;
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// AI Smart Diagnostic & Auto-Optimizer Controller
+// -----------------------------------------------------------------------------
+async function runAiSmartScan(autoSilent = false) {
+  if (state.isAiBusy) return;
+  const btn = document.getElementById('btn-tuning-ai-scan');
+  const origHtml = btn ? btn.innerHTML : '';
+  const summaryEl = document.getElementById('ai-diagnostic-summary');
+  state.isAiBusy = true;
+
+  if (btn && !autoSilent) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="pulse-dot"></span> AI đang quét PC...`;
+  }
+  if (summaryEl && (!state.aiAnalysis || !autoSilent)) {
+    summaryEl.innerHTML = `<span class="pulse-dot" style="display:inline-block;margin-right:8px;"></span> AI đang quét cấu hình CPU, GPU, phân luồng Game, RAM và tệp tạm...`;
+  }
+
+  try {
+    const res = await fetch('/api/tuning/ai_analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    state.aiAnalysis = data;
+    state.selectedAiFindingIds.clear();
+    (data.findings || []).forEach(f => state.selectedAiFindingIds.add(f.id));
+    renderAiDiagnostic(data);
+
+    if (data.status) {
+      state.tuningStatus = data.status;
+      renderTuningView(data.status);
+    }
+
+    if (!autoSilent) {
+      if (data.findings_count === 0) {
+        showToast('AI quét hoàn tất: PC của bạn đang ở trạng thái tối ưu 100/100!', 'success');
+      } else {
+        showToast(`AI phát hiện ${data.findings_count} điểm chưa tối ưu có thể xử lý ngay!`, 'info');
+      }
+    }
+  } catch (e) {
+    if (summaryEl) {
+      summaryEl.textContent = `Lỗi AI quét hệ thống: ${e.message}`;
+    }
+    if (!autoSilent) {
+      showToast(`Lỗi AI phân tích: ${e.message}`, 'danger');
+    }
+  } finally {
+    state.isAiBusy = false;
+    if (btn && !autoSilent) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+    }
+  }
+}
+
+function updateAiSelectedCounter() {
+  const countEl = document.getElementById('ai-selected-count');
+  const applyBtn = document.getElementById('btn-ai-apply-selected');
+  const cnt = state.selectedAiFindingIds.size;
+  if (countEl) {
+    countEl.textContent = `${cnt} mục đã chọn`;
+  }
+  if (applyBtn) {
+    applyBtn.disabled = cnt === 0;
+  }
+}
+
+function renderAiDiagnostic(data) {
+  if (!data) return;
+  const hw = data.hardware_profile || {};
+  const tele = data.telemetry || {};
+  const dgpuName = tele.available ? tele.name : 'GPU mặc định';
+  const hzText = data.display_hz ? `${data.display_hz}Hz` : '--Hz';
+
+  const hwEl = document.getElementById('ai-diagnostic-hw');
+  if (hwEl) {
+    hwEl.textContent = `${hw.form_factor_label || 'PC Windows'} • ${hw.cpu_name || 'CPU'} • ${dgpuName} • ${hzText}`;
+  }
+
+  const scoreEl = document.getElementById('ai-diagnostic-score');
+  if (scoreEl) {
+    const score = Number(data.health_score ?? 0);
+    scoreEl.textContent = `${score}/100`;
+    scoreEl.classList.remove('ok', 'warn', 'bad');
+    scoreEl.classList.add(score >= 90 ? 'ok' : (score >= 60 ? 'warn' : 'bad'));
+  }
+
+  const summaryEl = document.getElementById('ai-diagnostic-summary');
+  if (summaryEl) {
+    summaryEl.textContent = data.ai_summary || '';
+  }
+
+  const listEl = document.getElementById('ai-findings-list');
+  const footerEl = document.getElementById('ai-diagnostic-footer');
+  const findings = data.findings || [];
+
+  if (!listEl) return;
+
+  if (findings.length === 0) {
+    listEl.innerHTML = `
+      <div class="ai-all-optimal">
+        <span>✅ Toàn bộ thiết lập CPU, GPU, phân luồng Game/iGPU, RAM và tệp tạm đều đã đạt chuẩn tối ưu.</span>
+      </div>
+    `;
+    if (footerEl) footerEl.style.display = 'none';
+    return;
+  }
+
+  const sevLabels = {
+    high: 'Quan trọng',
+    medium: 'Khuyên tối ưu',
+    low: 'Nhẹ'
+  };
+
+  listEl.innerHTML = findings.map(f => {
+    const checked = state.selectedAiFindingIds.has(f.id) ? 'checked' : '';
+    const sevClass = f.severity === 'high' ? 'high' : (f.severity === 'low' ? 'low' : 'medium');
+    const sevText = sevLabels[f.severity] || 'Khuyên tối ưu';
+    const adminPill = (f.requires_admin && !data.is_admin)
+      ? `<span class="tuning-pill admin">Cần Admin</span>`
+      : '';
+
+    return `
+      <label class="ai-finding-row">
+        <input type="checkbox" class="custom-checkbox ai-finding-chk" data-finding-id="${escapeHtml(f.id)}" ${checked}>
+        <div class="ai-finding-body">
+          <div class="ai-finding-top">
+            <span class="ai-sev-pill ${sevClass}">${sevText}</span>
+            <span class="tuning-pill admin">${escapeHtml(f.category)}</span>
+            ${adminPill}
+            <strong class="ai-finding-title">${escapeHtml(f.title)}</strong>
+          </div>
+          <div class="ai-finding-diff">
+            <span>Hiện tại: <em>${escapeHtml(f.current_label)}</em></span>
+            <span class="ai-arrow">→</span>
+            <span class="ai-rec-val">Đề xuất: <strong>${escapeHtml(f.recommended_label)}</strong></span>
+          </div>
+          <div class="ai-finding-reason">${escapeHtml(f.reason)}</div>
+        </div>
+      </label>
+    `;
+  }).join('');
+
+  listEl.querySelectorAll('.ai-finding-chk').forEach(chk => {
+    chk.addEventListener('change', () => {
+      const fid = chk.getAttribute('data-finding-id');
+      if (chk.checked) {
+        state.selectedAiFindingIds.add(fid);
+      } else {
+        state.selectedAiFindingIds.delete(fid);
+      }
+      updateAiSelectedCounter();
+    });
+  });
+
+  if (footerEl) footerEl.style.display = 'flex';
+  updateAiSelectedCounter();
+}
+
+async function applyAiSmartRecommendations() {
+  if (state.isAiBusy || state.isTuningBusy) return;
+  const ids = Array.from(state.selectedAiFindingIds);
+  if (ids.length === 0) {
+    showToast('Vui lòng chọn ít nhất 1 điểm để AI tối ưu!', 'warning');
+    return;
+  }
+
+  const btn = document.getElementById('btn-ai-apply-selected');
+  const origHtml = btn ? btn.innerHTML : '';
+  state.isAiBusy = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="pulse-dot"></span> Đang tự động tối ưu...`;
+  }
+
+  try {
+    const res = await fetch('/api/tuning/ai_apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ finding_ids: ids })
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+
+    if (d.status) {
+      state.tuningStatus = d.status;
+      renderTuningView(d.status);
+    }
+    if (d.analysis) {
+      state.aiAnalysis = d.analysis;
+      state.selectedAiFindingIds.clear();
+      (d.analysis.findings || []).forEach(f => state.selectedAiFindingIds.add(f.id));
+      renderAiDiagnostic(d.analysis);
+    }
+
+    if (d.success) {
+      const msg = d.requires_reboot ? `${d.message} (Nên Restart máy 1 lần để HAGS có hiệu lực)` : d.message;
+      showToast(msg, 'success');
+    } else if (d.partial) {
+      showToast(d.message, 'warning');
+    } else {
+      showToast(d.need_admin ? 'Một số mục cần quyền Administrator để lưu!' : (d.message || 'Không thể áp dụng.'), 'warning');
+    }
+
+    loadSystemOverview();
+    loadMemoryStatus();
+  } catch (e) {
+    showToast(`Lỗi khi AI tối ưu: ${e.message}`, 'danger');
+  } finally {
+    state.isAiBusy = false;
+    if (btn) {
+      btn.innerHTML = origHtml;
+      updateAiSelectedCounter();
     }
   }
 }

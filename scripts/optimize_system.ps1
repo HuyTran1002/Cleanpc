@@ -252,8 +252,8 @@ if ($Action -eq "Optimize") {
     Set-RegDword -Path $chromePolicyPath -Name "BackgroundModeEnabled" -Value 0
     Write-Host "      -> Edge Startup Boost & Chrome/Edge Background Mode: OFF" -ForegroundColor Green
 
-    # 7. Route browsers & background utilities to Intel Iris Xe (Power Saving), and FORCE Games to NVIDIA RTX 3060 (High Performance)
-    Write-Host "[7/8] Dang tach iGPU cho app nen va ep 100% Game chay card roi RTX 3060..." -ForegroundColor Yellow
+    # 7. Route browsers & background utilities to iGPU (Power Saving), and FORCE Games to Dedicated GPU (High Performance)
+    Write-Host "[7/8] Dang tach iGPU cho app nen va ep 100% Game chay card do hoa roi..." -ForegroundColor Yellow
     $safeIgpuNames = @("chrome.exe", "msedge.exe", "browser.exe", "brave.exe", "opera.exe", "code.exe", "antigravity.exe", "idman.exe", "idmlite.exe", "discord.exe", "msedgewebview2.exe", "steamwebhelper.exe")
     foreach ($exe in $appPaths) {
         Set-RegString -Path $gpuPrefPath -Name $exe -Value "GpuPreference=1;"
@@ -269,7 +269,7 @@ if ($Action -eq "Optimize") {
                     $curVal = Get-RegValueOrNull -Path $gpuPrefPath -Name $propName
                     if ($curVal -match "GpuPreference=1") {
                         Set-RegString -Path $gpuPrefPath -Name $propName -Value "GpuPreference=2;"
-                        Write-Host "      -> Fix Game sang RTX 3060: $baseName" -ForegroundColor Cyan
+                        Write-Host "      -> Fix Game sang Card roi (High Perf): $baseName" -ForegroundColor Cyan
                     }
                 }
             }
@@ -277,10 +277,6 @@ if ($Action -eq "Optimize") {
     }
 
     $gameExes = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
-    $knownGames = @("D:\NG Launcher\Mod Library\New Legacy\GTA5.exe")
-    foreach ($g in $knownGames) {
-        if (Test-Path $g) { [void]$gameExes.Add($g) }
-    }
     Get-ChildItem "HKCU:\System\GameConfigStore\Children" -ErrorAction SilentlyContinue | ForEach-Object {
         $gPath = (Get-ItemProperty -Path $_.PSPath -Name "MatchedExeFullPath" -ErrorAction SilentlyContinue).MatchedExeFullPath
         if ($gPath -and (Test-Path $gPath)) {
@@ -292,7 +288,7 @@ if ($Action -eq "Optimize") {
     }
     foreach ($gExe in $gameExes) {
         Set-RegString -Path $gpuPrefPath -Name $gExe -Value "GpuPreference=2;"
-        Write-Host "      -> RTX 3060 High Perf: $(Split-Path -Leaf $gExe)" -ForegroundColor Green
+        Write-Host "      -> Dedicated GPU High Perf: $(Split-Path -Leaf $gExe)" -ForegroundColor Green
     }
 
     # 8. Optimize NVIDIA Control Panel Global Profile via NVAPI DRS

@@ -888,8 +888,8 @@ def clean_junk_category(category_id: str, use_recycle_bin: bool = False) -> dict
 
 def close_temp_blocking_processes() -> dict:
     """Safely terminate background processes holding User Temp files locked."""
-    import subprocess
-    temp_dir = os.environ.get('TEMP', r'C:\Users\HuyBlink\AppData\Local\Temp').replace('\\', '\\\\')
+    import tempfile
+    temp_dir = (os.environ.get('TEMP') or tempfile.gettempdir()).replace('\\', '\\\\')
     ps_script = f"""
     $temp = '{temp_dir}'.ToLower()
     $stopped = @()
@@ -2735,6 +2735,110 @@ def _get_display_mux_info() -> dict:
     }
 
 
+class _SYSTEM_POWER_STATUS(ctypes.Structure):
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_ubyte),
+        ("BatteryFlag", ctypes.c_ubyte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("SystemStatusFlag", ctypes.c_ubyte),
+        ("BatteryLifeTime", ctypes.c_uint32),
+        ("BatteryFullLifeTime", ctypes.c_uint32),
+    ]
+
+
+def _get_hardware_profile(telemetry: dict = None, display_mux: dict = None) -> dict:
+    """Detect machine form factor (Laptop vs Desktop PC), CPU/GPU class, and dynamic AI tuning targets."""
+    import winreg
+    is_laptop = False
+    ac_plugged = True
+    try:
+        sps = _SYSTEM_POWER_STATUS()
+        if _kernel32.GetSystemPowerStatus(ctypes.byref(sps)):
+            is_laptop = sps.BatteryFlag not in (128, 255)
+            ac_plugged = (sps.ACLineStatus == 1)
+    except Exception:
+        pass
+
+    cpu_name = "CPU Windows"
+    cpu_base_mhz = 0
+    logical_cores = os.cpu_count() or 0
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            0,
+            winreg.KEY_READ,
+        ) as key:
+            val_name, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+            cpu_name = " ".join(str(val_name).split())
+            try:
+                val_mhz, _ = winreg.QueryValueEx(key, "~MHz")
+                cpu_base_mhz = int(val_mhz)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+    low_cpu = cpu_name.lower()
+    if "intel" in low_cpu:
+        cpu_vendor = "Intel"
+    elif "amd" in low_cpu or "ryzen" in low_cpu or "athlon" in low_cpu or "epyc" in low_cpu:
+        cpu_vendor = "AMD"
+    else:
+        cpu_vendor = "Unknown"
+
+    is_u_series = bool(re.search(r"(\d{4,5}u\b|\bu\d{3,4}\b)", low_cpu))
+    is_high_perf_cpu = bool(
+        re.search(r"(i[579]-|ryzen\s*[579]|core\(tm\)\s*ultra|\d{4,5}h[xk]?|\d{4,5}hs)", low_cpu)
+    ) and not is_u_series
+    is_high_perf_laptop = bool(is_laptop and is_high_perf_cpu)
+
+    gpu_name = ((telemetry or {}).get("name") or "").lower()
+    is_rtx_40_plus = bool(re.search(r"rtx\s*[45]\d{3}", gpu_name))
+    has_nvidia = bool((display_mux or {}).get("has_nvidia") or (telemetry or {}).get("available"))
+    has_igpu = bool((display_mux or {}).get("has_igpu"))
+    dgpu_only = bool((display_mux or {}).get("dgpu_only_active"))
+
+    if not is_laptop:
+        form_factor_label = "Desktop PC (Máy bàn)"
+    elif is_high_perf_laptop:
+        form_factor_label = "Laptop Gaming / Hiệu năng cao"
+    else:
+        form_factor_label = "Laptop Văn phòng / Mỏng nhẹ"
+
+    if is_high_perf_laptop and cpu_base_mhz >= 2000:
+        recommended_freq_cap = max(3600, min(4000, int(round((cpu_base_mhz + 900) / 100.0) * 100)))
+    elif is_high_perf_laptop:
+        recommended_freq_cap = 3800
+    else:
+        recommended_freq_cap = 0
+
+    recommended_hags = bool(is_rtx_40_plus)
+    recommended_boost_dc = bool(is_laptop and not has_nvidia)
+    recommended_max_dc = 85 if (is_laptop and not has_nvidia) else 100
+    can_offload_igpu = bool(has_nvidia and has_igpu and not dgpu_only)
+
+    return {
+        "cpu_name": cpu_name,
+        "cpu_vendor": cpu_vendor,
+        "cpu_base_mhz": cpu_base_mhz,
+        "logical_cores": logical_cores,
+        "is_laptop": is_laptop,
+        "ac_plugged": ac_plugged,
+        "is_high_perf_laptop": is_high_perf_laptop,
+        "is_rtx_40_plus": is_rtx_40_plus,
+        "has_nvidia": has_nvidia,
+        "has_igpu": has_igpu,
+        "dgpu_only": dgpu_only,
+        "form_factor_label": form_factor_label,
+        "recommended_freq_cap": recommended_freq_cap,
+        "recommended_hags": recommended_hags,
+        "recommended_boost_dc": recommended_boost_dc,
+        "recommended_max_dc": recommended_max_dc,
+        "can_offload_igpu": can_offload_igpu,
+    }
+
+
 def _recommended_max_fps(refresh_hz: int) -> int:
     """Calculate optimal G-Sync/VRR FPS cap (3 FPS below active panel max Hz)."""
     if refresh_hz >= 75:
@@ -2950,36 +3054,12 @@ def _apply_setting_action(setting_id: str, value) -> dict:
     return {"requires_reboot": requires_reboot}
 
 
-_OPTIMAL_PROFILE_MAP = {
-    "nv_power_mode": 5,
-    "nv_optimus": True,
-    "nv_max_fps": 0,
-    "nv_bg_fps": 0,
-    "nv_low_latency": False,
-    "nv_tex_quality": 10,
-    "nv_tex_opt": True,
-    "nv_refresh_rate": True,
-    "nv_vsync": 1620202130,
-    "cpu_boost_ac": 4,
-    "cpu_freq_cap": 3800,
-    "cpu_boost_dc": False,
-    "cpu_max_dc": 100,
-    "pcie_aspm": True,
-    "intel_igpu_power": True,
-    "win_hags": False,
-    "win_gamemode": False,
-    "win_gamedvr": True,
-    "win_vrr": True,
-    "win_transparency": True,
-    "win_uwp_bg": True,
-    "browser_bg_off": True,
-}
-
-
 def get_system_tuning_status() -> dict:
     """Inspect live NVIDIA telemetry, power plan, Windows registry states, and iGPU app routing."""
     admin = is_admin()
     telemetry = _get_nvidia_telemetry()
+    display_mux = _get_display_mux_info()
+    hw = _get_hardware_profile(telemetry, display_mux)
     refresh_hz = _get_display_refresh_hz()
     rec_fps = _recommended_max_fps(refresh_hz)
     pwr = _query_powercfg_all()
@@ -2992,6 +3072,13 @@ def get_system_tuning_status() -> dict:
         return int(entry["value"]) if entry is not None else default
 
     cur_max_fps = _nv_val(0x10835002, 0)
+    hz_label = f"{refresh_hz}Hz" if refresh_hz else "tối đa"
+    dgpu_label = telemetry["name"] if telemetry.get("available") else "card đồ họa rời"
+    igpu_label = display_mux["igpu_name"] or display_mux["igpu_short"] or "iGPU"
+    rec_freq_cap = hw["recommended_freq_cap"]
+    rec_hags = hw["recommended_hags"]
+    rec_boost_dc = hw["recommended_boost_dc"]
+    rec_max_dc = hw["recommended_max_dc"]
 
     dx_global = str(_reg_read("gpu_pref", "DirectXUserGlobalSettings", "") or "")
     hags_val = _reg_read("gfx_drivers", "HwSchMode", 1)
@@ -3011,12 +3098,50 @@ def get_system_tuning_status() -> dict:
     p_aspm = pvals["ASPM"]
     p_igpu = pvals["INTEL_GFX"]
 
+    if rec_freq_cap > 0:
+        freq_cap_desc = (
+            f"Điểm ngọt AI ({rec_freq_cap} MHz) tính theo base clock cho {hw['form_factor_label']} ({hw['cpu_vendor']} {hw['logical_cores']} luồng): "
+            f"giữ 100% tốc độ đa nhân & FPS nhưng cắt đỉnh áp 1.40V gây nóng 97°C và Thermal Throttling."
+        )
+        freq_cap_optimal = (p_freq_cap is not None and p_freq_cap > 0 and abs(p_freq_cap - rec_freq_cap) <= 200)
+    else:
+        freq_cap_desc = (
+            f"Với {hw['form_factor_label']} ({hw['cpu_vendor']} {hw['logical_cores']} luồng), AI khuyến nghị Không giới hạn (0 MHz) "
+            f"để CPU bung tối đa xung nhịp."
+        )
+        freq_cap_optimal = (p_freq_cap == 0)
+
+    base_freq_choices = [3500, 3800, 4000, 4200]
+    if rec_freq_cap > 0 and rec_freq_cap not in base_freq_choices:
+        base_freq_choices.append(rec_freq_cap)
+    if p_freq_cap and p_freq_cap > 0 and p_freq_cap not in base_freq_choices:
+        base_freq_choices.append(p_freq_cap)
+    base_freq_choices = sorted(set(base_freq_choices))
+
+    freq_cap_options = [
+        {
+            "value": 0,
+            "label": "Không giới hạn (Bung max Turbo" + (" - AI Khuyên dùng)" if rec_freq_cap == 0 else " - Dễ vọt 97°C)"),
+        }
+    ]
+    for mhz in base_freq_choices:
+        ghz = mhz / 1000.0
+        if rec_freq_cap == mhz:
+            tag = " - Điểm ngọt AI Khuyên dùng"
+        elif mhz <= 3500:
+            tag = " - Siêu mát 65–72°C"
+        elif mhz == 4000:
+            tag = " - Hiệu năng cao"
+        else:
+            tag = ""
+        freq_cap_options.append({"value": mhz, "label": f"{mhz} MHz ({ghz:.1f} GHz{tag})"})
+
     settings = [
         # Group: nvidia
         {
             "id": "nv_power_mode", "group": "nvidia", "type": "select", "requires_admin": True, "available": nv_ok,
             "label": "Chế độ nguồn NVIDIA (Power Management)",
-            "desc": "Normal giúp RTX giảm xuống 0.2V–0.3V (~38°C) khi lướt web và tự bung max hiệu năng khi mở game.",
+            "desc": f"Normal giúp {dgpu_label} giảm điện áp nghỉ (~38°C) khi lướt web và tự bung max hiệu năng khi mở game.",
             "current": _nv_val(0x1057EB71, 5), "optimal": 5,
             "is_optimal": nv_ok and _nv_val(0x1057EB71, 5) == 5,
             "options": [
@@ -3028,7 +3153,7 @@ def get_system_tuning_status() -> dict:
         {
             "id": "nv_optimus", "group": "nvidia", "type": "toggle", "requires_admin": True, "available": nv_ok,
             "label": "Ưu tiên card rời NVIDIA cho Game (Optimus dGPU Prefer)",
-            "desc": "Đặt Profile 3D ưu tiên RTX 3060 cho toàn bộ game, trong khi trình duyệt và app nền đã tách riêng sang iGPU.",
+            "desc": f"Đặt Profile 3D ưu tiên {dgpu_label} cho toàn bộ game, trong khi trình duyệt và app nền đã tách riêng sang {display_mux['igpu_short']}.",
             "current": _nv_val(0x10F9DC80, 1) == 1 and _nv_val(0x10F9DC81, 1) == 1, "optimal": True,
             "is_optimal": nv_ok and _nv_val(0x10F9DC80, 1) == 1 and _nv_val(0x10F9DC81, 1) == 1,
         },
@@ -3082,7 +3207,7 @@ def get_system_tuning_status() -> dict:
         {
             "id": "nv_refresh_rate", "group": "nvidia", "type": "toggle", "requires_admin": True, "available": nv_ok,
             "label": "Tần số quét ưu tiên cao nhất (Highest Available)",
-            "desc": "Đảm bảo game luôn chạy đúng tần số quét tối đa của màn hình (165Hz).",
+            "desc": f"Đảm bảo game luôn chạy đúng tần số quét tối đa của màn hình ({hz_label}).",
             "current": _nv_val(0x0064B541, 0) == 1, "optimal": True,
             "is_optimal": nv_ok and _nv_val(0x0064B541, 0) == 1,
         },
@@ -3103,7 +3228,7 @@ def get_system_tuning_status() -> dict:
         {
             "id": "cpu_boost_ac", "group": "power", "type": "select", "requires_admin": True, "available": p_boost_ac is not None,
             "label": "CPU Turbo Boost khi cắm sạc (AC)",
-            "desc": "Efficient Aggressive giữ đúng chuẩn Intel Speed Shift gốc: bung 100% xung nhịp khi cần, không khóa hay giới hạn CPU.",
+            "desc": "Efficient Aggressive giữ đúng chuẩn Speed Shift gốc: bung 100% xung nhịp khi cần, không khóa hay giới hạn CPU.",
             "current": p_boost_ac if p_boost_ac is not None else 4, "optimal": 4,
             "is_optimal": p_boost_ac == 4,
             "options": [
@@ -3116,47 +3241,51 @@ def get_system_tuning_status() -> dict:
         {
             "id": "cpu_freq_cap", "group": "power", "type": "select", "requires_admin": True, "available": p_freq_cap is not None,
             "label": "Trần xung nhịp Turbo CPU (P-Core & E-Core Max MHz)",
-            "desc": "Điểm ngọt 3800 MHz (3.8 GHz) giữ 100% tốc độ đa nhân & 200+ FPS nhưng cắt đỉnh điện áp 1.40V, chặn đứng cú vọt 97°C và Thermal Throttling.",
-            "current": p_freq_cap if p_freq_cap is not None else 0, "optimal": 3800,
-            "is_optimal": p_freq_cap in (3800, 3900, 4000),
-            "options": [
-                {"value": 0, "label": "Không giới hạn (5.0 GHz - Dễ vọt 97°C)"},
-                {"value": 3500, "label": "3500 MHz (3.5 GHz - Siêu mát 65–72°C)"},
-                {"value": 3800, "label": "3800 MHz (3.8 GHz - Điểm ngọt Khuyên dùng)"},
-                {"value": 4000, "label": "4000 MHz (4.0 GHz - Hiệu năng cao)"},
-                {"value": 4200, "label": "4200 MHz (4.2 GHz)"},
-            ],
+            "desc": freq_cap_desc,
+            "current": p_freq_cap if p_freq_cap is not None else 0, "optimal": rec_freq_cap,
+            "is_optimal": freq_cap_optimal,
+            "options": freq_cap_options,
         },
         {
-            "id": "cpu_boost_dc", "group": "power", "type": "toggle", "requires_admin": True, "available": p_boost_dc is not None,
+            "id": "cpu_boost_dc", "group": "power", "type": "toggle", "requires_admin": True, "available": bool(hw["is_laptop"] and p_boost_dc is not None),
             "label": "Tắt CPU Turbo Boost khi dùng Pin (DC)",
-            "desc": "Tắt mục này để giữ Turbo Boost hoạt động bình thường cả khi dùng Pin (không khóa CPU).",
-            "current": p_boost_dc == 0, "optimal": False,
-            "is_optimal": p_boost_dc is not None and p_boost_dc != 0,
+            "desc": (
+                f"Với {hw['form_factor_label']} (chạy iGPU), AI khuyên BẬT để tắt Turbo Boost khi dùng Pin giúp mát máy và tăng thời lượng pin."
+                if rec_boost_dc
+                else "Với máy có card rời NVIDIA, AI khuyên TẮT mục này để giữ Turbo Boost hoạt động bình thường cả khi dùng Pin."
+            ),
+            "current": p_boost_dc == 0, "optimal": rec_boost_dc,
+            "is_optimal": (p_boost_dc == 0) if rec_boost_dc else (p_boost_dc is not None and p_boost_dc != 0),
         },
         {
-            "id": "cpu_max_dc", "group": "power", "type": "select", "requires_admin": True, "available": p_max_dc is not None,
+            "id": "cpu_max_dc", "group": "power", "type": "select", "requires_admin": True, "available": bool(hw["is_laptop"] and p_max_dc is not None),
             "label": "Giới hạn hiệu năng CPU khi dùng Pin (DC)",
-            "desc": "Giữ 100% công suất CPU khi dùng Pin (không giới hạn hiệu năng).",
-            "current": p_max_dc if p_max_dc is not None else 100, "optimal": 100,
-            "is_optimal": p_max_dc == 100,
+            "desc": (
+                f"Với {hw['form_factor_label']} (không có card rời), AI khuyên giới hạn 85% khi dùng Pin để tối ưu pin & chống nóng."
+                if rec_max_dc == 85
+                else "Giữ 100% công suất CPU khi dùng Pin (không giới hạn hiệu năng)."
+            ),
+            "current": p_max_dc if p_max_dc is not None else 100, "optimal": rec_max_dc,
+            "is_optimal": p_max_dc == rec_max_dc,
             "options": [
                 {"value": 75, "label": "75% (Pin lâu nhất)"},
-                {"value": 85, "label": "85%"},
-                {"value": 100, "label": "100% (Không giới hạn - Khuyên dùng)"},
+                {"value": 85, "label": "85%" + (" (AI Khuyên dùng cho Laptop văn phòng)" if rec_max_dc == 85 else "")},
+                {"value": 100, "label": "100% (Không giới hạn" + (" - AI Khuyên dùng)" if rec_max_dc == 100 else ")")},
             ],
         },
         {
             "id": "pcie_aspm", "group": "power", "type": "toggle", "requires_admin": True, "available": p_aspm["ac"] is not None,
             "label": "PCIe Link State Power Management (AC Off / Pin Max Savings)",
-            "desc": "Tắt ASPM khi cắm sạc để SSD NVMe & RTX đạt băng thông tối đa; bật Max Power Savings khi dùng pin.",
-            "current": p_aspm["ac"] == 0 and p_aspm["dc"] == 2, "optimal": True,
-            "is_optimal": p_aspm["ac"] == 0 and p_aspm["dc"] == 2,
+            "desc": f"Tắt ASPM khi cắm sạc để SSD NVMe & {dgpu_label} đạt băng thông tối đa; bật Max Power Savings khi dùng pin.",
+            "current": (p_aspm["ac"] == 0 and p_aspm["dc"] == 2) if hw["is_laptop"] else (p_aspm["ac"] == 0),
+            "optimal": True,
+            "is_optimal": (p_aspm["ac"] == 0 and p_aspm["dc"] == 2) if hw["is_laptop"] else (p_aspm["ac"] == 0),
         },
         {
-            "id": "intel_igpu_power", "group": "power", "type": "toggle", "requires_admin": True, "available": p_igpu["ac"] is not None,
+            "id": "intel_igpu_power", "group": "power", "type": "toggle", "requires_admin": True,
+            "available": bool(p_igpu["ac"] is not None and "intel" in (display_mux.get("igpu_name") or "").lower()),
             "label": "Intel iGPU Power Plan (AC Max Perf / Pin Max Battery)",
-            "desc": "Giúp Intel Iris Xe mượt ở 165Hz khi cắm sạc và tiết kiệm điện tối đa khi dùng pin.",
+            "desc": f"Giúp {igpu_label} mượt ở {hz_label} khi cắm sạc và tiết kiệm điện tối đa khi dùng pin.",
             "current": p_igpu["ac"] == 2 and p_igpu["dc"] == 0, "optimal": True,
             "is_optimal": p_igpu["ac"] == 2 and p_igpu["dc"] == 0,
         },
@@ -3165,14 +3294,18 @@ def get_system_tuning_status() -> dict:
         {
             "id": "win_hags", "group": "windows", "type": "toggle", "requires_admin": True, "available": True, "requires_reboot": True,
             "label": "Hardware-Accelerated GPU Scheduling (HAGS)",
-            "desc": "Tắt HAGS giúp RTX 3060 hạ xung nghỉ sâu hơn (tránh kẹt P0 22W) và không ép điện áp CPU qua Latency Hint (cần Restart nếu thay đổi).",
-            "current": hags_val == 2, "optimal": False,
-            "is_optimal": hags_val != 2,
+            "desc": (
+                f"Với GPU {dgpu_label} (RTX 40/50 Series), AI khuyên BẬT HAGS để kích hoạt DLSS 3/4 Frame Generation và tăng hiệu năng tối đa (cần Restart nếu thay đổi)."
+                if rec_hags
+                else f"Với {dgpu_label} ({hw['form_factor_label']}), AI khuyên TẮT HAGS giúp card rời hạ xung nghỉ sâu hơn (tránh kẹt P0) và không ép điện áp CPU qua Latency Hint (cần Restart nếu thay đổi)."
+            ),
+            "current": hags_val == 2, "optimal": rec_hags,
+            "is_optimal": (hags_val == 2) if rec_hags else (hags_val != 2),
         },
         {
             "id": "win_gamemode", "group": "windows", "type": "toggle", "requires_admin": False, "available": True,
             "label": "Windows Game Mode",
-            "desc": "Tắt Game Mode để bộ lập lịch Intel Thread Director tự điều phối nhân P-core/E-core mát mẻ hơn.",
+            "desc": "Tắt Game Mode để bộ lập lịch hệ điều hành tự điều phối nhân xử lý mát mẻ và ổn định hơn.",
             "current": game_mode_val == 1, "optimal": False,
             "is_optimal": game_mode_val == 0,
         },
@@ -3213,8 +3346,7 @@ def get_system_tuning_status() -> dict:
         },
     ]
 
-    apps = _discover_offload_apps()
-    display_mux = _get_display_mux_info()
+    apps = _discover_offload_apps() if hw["can_offload_igpu"] else []
     available_settings = [s for s in settings if s["available"]]
     optimal_count = sum(1 for s in available_settings if s["is_optimal"])
     total_count = len(available_settings)
@@ -3223,6 +3355,7 @@ def get_system_tuning_status() -> dict:
     return {
         "is_admin": admin,
         "has_backup": os.path.exists(TUNING_BACKUP_FILE),
+        "hardware_profile": hw,
         "power_scheme": pwr["scheme_name"],
         "display_hz": refresh_hz,
         "display_mux": display_mux,
@@ -3268,13 +3401,14 @@ def toggle_igpu_offload_app(exe_path: str, enabled: bool) -> dict:
         return {"success": False, "error": "Thiếu đường dẫn ứng dụng."}
     _ensure_tuning_backup()
     try:
+        igpu_short = _get_display_mux_info().get("igpu_short", "iGPU")
         if enabled:
             _reg_write_str("gpu_pref", exe_path, "GpuPreference=1;")
         else:
             _reg_delete_value("gpu_pref", exe_path)
         return {
             "success": True,
-            "message": f"Đã {'ép dùng Intel iGPU' if enabled else 'trả về mặc định GPU'} cho {os.path.basename(exe_path)}.",
+            "message": f"Đã {'ép dùng ' + igpu_short if enabled else 'trả về mặc định GPU'} cho {os.path.basename(exe_path)}.",
             "status": get_system_tuning_status(),
         }
     except Exception as e:
@@ -3282,70 +3416,355 @@ def toggle_igpu_offload_app(exe_path: str, enabled: bool) -> dict:
 
 
 def apply_optimal_tuning_profile() -> dict:
-    """Apply all recommended performance & cooling optimizations in one click."""
+    """Apply all dynamic hardware-adaptive AI optimizations in one click."""
+    return apply_ai_recommendations()
+
+
+def _scan_game_gpu_findings(dgpu_label: str, display_mux: dict) -> list:
+    """Detect installed or configured games not locked to High-Performance dGPU (or forced onto iGPU)."""
+    if not display_mux.get("has_nvidia"):
+        return []
+    import winreg
+    existing_prefs = {}
+    try:
+        _, subkey = _REG_PATHS["gpu_pref"]
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_READ) as key:
+            idx = 0
+            while True:
+                try:
+                    name, val, _ = winreg.EnumValue(key, idx)
+                    idx += 1
+                    if name.lower().endswith(".exe"):
+                        existing_prefs[os.path.normcase(os.path.abspath(name))] = (name, str(val))
+                except OSError:
+                    break
+    except OSError:
+        pass
+
+    findings = []
+    seen = set()
+
+    # 1. Any non-safe-list executable forced to iGPU (GpuPreference=1)
+    for norm_p, (orig_p, pref_val) in existing_prefs.items():
+        exe_base = os.path.basename(orig_p).lower()
+        if exe_base not in _SAFE_IGPU_OFFLOAD_EXES and "gpupreference=1" in pref_val.lower() and os.path.isfile(orig_p):
+            seen.add(norm_p)
+            findings.append({
+                "id": f"game_gpu:{orig_p}",
+                "action_type": "game_gpu",
+                "exe_path": orig_p,
+                "severity": "high",
+                "category": "Phân luồng GPU Game",
+                "title": f"Game {os.path.basename(orig_p)} đang bị ép chạy iGPU",
+                "current_label": "Đang chạy iGPU (Gây nóng CPU)",
+                "recommended_label": f"Ưu tiên {dgpu_label} (High Performance)",
+                "reason": "Game đang bị gán GpuPreference=1 (iGPU tích hợp trên CPU). Chuyển sang card rời giúp hạ nhiệt CPU và tăng tối đa FPS.",
+                "requires_admin": False,
+            })
+
+    # 2. Games tracked by Windows GameConfigStore not yet set to High Performance (GpuPreference=2)
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"System\GameConfigStore\Children", 0, winreg.KEY_READ) as root_key:
+            idx = 0
+            while True:
+                try:
+                    sub = winreg.EnumKey(root_key, idx)
+                    idx += 1
+                    with winreg.OpenKey(root_key, sub, 0, winreg.KEY_READ) as sk:
+                        try:
+                            exe_path, _ = winreg.QueryValueEx(sk, "MatchedExeFullPath")
+                        except OSError:
+                            continue
+                    if not exe_path:
+                        continue
+                    exe_str = str(exe_path).strip()
+                    exe_base = os.path.basename(exe_str).lower()
+                    norm_p = os.path.normcase(os.path.abspath(exe_str))
+                    if (
+                        exe_base.endswith(".exe")
+                        and exe_base not in _SAFE_IGPU_OFFLOAD_EXES
+                        and norm_p not in seen
+                        and os.path.isfile(exe_str)
+                    ):
+                        pref_val = existing_prefs.get(norm_p, (exe_str, ""))[1]
+                        if "gpupreference=2" not in pref_val.lower():
+                            seen.add(norm_p)
+                            is_igpu = "gpupreference=1" in pref_val.lower()
+                            findings.append({
+                                "id": f"game_gpu:{exe_str}",
+                                "action_type": "game_gpu",
+                                "exe_path": exe_str,
+                                "severity": "high",
+                                "category": "Phân luồng GPU Game",
+                                "title": f"Game {os.path.basename(exe_str)} chưa khóa ưu tiên Card rời",
+                                "current_label": "Đang chạy iGPU (Gây nóng CPU)" if is_igpu else "Mặc định (Chưa khóa dGPU)",
+                                "recommended_label": f"Ưu tiên {dgpu_label} (High Performance)",
+                                "reason": "Khóa GpuPreference=2 buộc Windows xuất khung hình game trực tiếp qua card rời, tránh dồn tải vào nhân đồ họa trên CPU.",
+                                "requires_admin": False,
+                            })
+                except OSError:
+                    break
+    except OSError:
+        pass
+
+    return findings
+
+
+def _measure_deletable_temp_junk(cat: dict) -> tuple:
+    """Count actually unlocked (deletable) files and bytes in User Temp so active app locks are ignored."""
+    if not cat:
+        return 0, 0
+    deletable_bytes = 0
+    deletable_files = 0
+    for base_path in expand_category_paths(cat):
+        if os.path.isfile(base_path):
+            try:
+                with open(base_path, "r+b"):
+                    pass
+                deletable_bytes += os.path.getsize(base_path)
+                deletable_files += 1
+            except OSError:
+                pass
+            continue
+        stack = [base_path]
+        while stack:
+            cur = stack.pop()
+            try:
+                with os.scandir(cur) as it:
+                    for entry in it:
+                        try:
+                            if entry.is_file(follow_symlinks=False):
+                                with open(entry.path, "r+b"):
+                                    pass
+                                deletable_bytes += entry.stat(follow_symlinks=False).st_size
+                                deletable_files += 1
+                            elif entry.is_dir(follow_symlinks=False):
+                                stack.append(entry.path)
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+    return deletable_bytes, deletable_files
+
+
+def analyze_system_ai() -> dict:
+    """AI-assisted hardware profiling & diagnostic scanner returning actionable optimization findings."""
+    tuning = get_system_tuning_status()
+    hw = tuning["hardware_profile"]
+    display_mux = tuning["display_mux"]
+    telemetry = tuning["telemetry"]
+    mem = get_memory_status()
+
+    user_temp_cat = next((c for c in JUNK_CATEGORIES if c["id"] == "user_temp"), None)
+    temp_scan = (
+        scan_single_junk_category(user_temp_cat)
+        if user_temp_cat
+        else {"total_bytes": 0, "total_formatted": "0 B", "total_files": 0}
+    )
+    deletable_temp_bytes, deletable_temp_files = (
+        _measure_deletable_temp_junk(user_temp_cat)
+        if temp_scan["total_bytes"] >= 150 * 1024 * 1024
+        else (temp_scan["total_bytes"], temp_scan["total_files"])
+    )
+
+    dgpu_label = telemetry["name"] if telemetry.get("available") else "Card đồ họa rời"
+    igpu_short = display_mux.get("igpu_short", "iGPU")
+
+    findings = []
+    group_cat_map = {
+        "nvidia": "Card Đồ Họa NVIDIA",
+        "power": "CPU & Nguồn Điện",
+        "windows": "Windows & Tài Nguyên Nền",
+    }
+    high_priority_ids = {"cpu_freq_cap", "nv_optimus", "win_hags", "nv_power_mode", "cpu_boost_ac"}
+
+    # 1. Scan all tuning settings
+    for s in tuning["settings"]:
+        if not s.get("available") or s.get("is_optimal"):
+            continue
+        if s["type"] == "toggle":
+            cur_lbl = "Đang Bật" if s["current"] else "Đang Tắt"
+            rec_lbl = "Bật" if s["optimal"] else "Tắt"
+        else:
+            opts = {str(o["value"]): o["label"] for o in (s.get("options") or [])}
+            cur_lbl = opts.get(str(s["current"]), str(s["current"]))
+            rec_lbl = opts.get(str(s["optimal"]), str(s["optimal"]))
+
+        findings.append({
+            "id": f"setting:{s['id']}",
+            "action_type": "setting",
+            "setting_id": s["id"],
+            "target_value": s["optimal"],
+            "severity": "high" if s["id"] in high_priority_ids else "medium",
+            "category": group_cat_map.get(s["group"], "Tối ưu hệ thống"),
+            "title": s["label"],
+            "current_label": cur_lbl,
+            "recommended_label": rec_lbl,
+            "reason": s["desc"],
+            "requires_admin": bool(s.get("requires_admin", False)),
+        })
+
+    # 2. Scan Game GPU routing
+    findings.extend(_scan_game_gpu_findings(dgpu_label, display_mux))
+
+    # 3. Scan Background iGPU offload (only when Hybrid Optimus is active)
+    if hw.get("can_offload_igpu"):
+        for app in tuning.get("offload_apps", []):
+            if not app.get("is_igpu"):
+                findings.append({
+                    "id": f"offload:{app['path']}",
+                    "action_type": "offload",
+                    "exe_path": app["path"],
+                    "severity": "medium",
+                    "category": "Tiết kiệm nhiệt GPU nền",
+                    "title": f"Ứng dụng nền {app['name']} chưa tách sang {igpu_short}",
+                    "current_label": app.get("current_pref", "Mặc định Windows"),
+                    "recommended_label": f"Chạy trên {igpu_short} (Tiết kiệm điện)",
+                    "reason": f"Tách trình duyệt/app nền sang {igpu_short} giúp card rời hạ xung ngủ mát khi không chơi game.",
+                    "requires_admin": False,
+                })
+
+    # 4. Scan RAM & Standby Cache pressure
+    if mem["used_percent"] >= 75 or (
+        tuning["is_admin"]
+        and mem["used_percent"] >= 65
+        and mem["system_cache_bytes"] >= int(4.0 * (1024**3))
+    ):
+        findings.append({
+            "id": "action:clean_memory",
+            "action_type": "clean_memory",
+            "severity": "medium",
+            "category": "Bộ nhớ RAM & Cache",
+            "title": f"Bộ nhớ đệm Standby Cache & RAM đang chiếm cao ({mem['used_percent']}% RAM, {mem['system_cache_formatted']} Cache)",
+            "current_label": f"Đang dùng {mem['used_formatted']} (Cache {mem['system_cache_formatted']})",
+            "recommended_label": "Giải phóng Standby List & Working Sets nhàn rỗi",
+            "reason": "Giải phóng bộ nhớ đệm tích tụ giúp ngăn chặn hiện tượng khựng khung hình (micro-stutter) khi vào game hoặc mở tác vụ nặng.",
+            "requires_admin": False,
+        })
+
+    # 5. Scan User Temp junk (only unlocked/deletable bytes >= 150 MB)
+    if deletable_temp_bytes >= 150 * 1024 * 1024:
+        del_fmt = format_bytes(deletable_temp_bytes)
+        findings.append({
+            "id": "action:clean_user_temp",
+            "action_type": "clean_user_temp",
+            "severity": "low",
+            "category": "Tệp tạm & Rác ổ cứng",
+            "title": f"Tồn đọng {del_fmt} ({deletable_temp_files} tệp có thể dọn) trong thư mục User Temp",
+            "current_label": del_fmt,
+            "recommended_label": "Dọn sạch tệp tạm an toàn",
+            "reason": "Xóa các tệp rác tạm sinh ra từ trình biên dịch, trình duyệt và phần mềm giúp giảm phân mảnh I/O ổ cứng SSD.",
+            "requires_admin": False,
+        })
+
+    sev_rank = {"high": 0, "medium": 1, "low": 2}
+    findings.sort(key=lambda f: sev_rank.get(f["severity"], 9))
+
+    if not findings:
+        health_score = 100
+    else:
+        non_setting_penalty = sum(
+            8 if f["severity"] == "high" else (4 if f["severity"] == "medium" else 2)
+            for f in findings
+            if f["action_type"] != "setting"
+        )
+        health_score = max(0, min(99, tuning["summary"]["score_pct"] - non_setting_penalty))
+
+    hz_str = f"{tuning['display_hz']}Hz" if tuning["display_hz"] else "chuẩn"
+    hw_intro = f"Đã nhận diện: {hw['form_factor_label']} • {hw['cpu_name']} • {dgpu_label} • Màn hình {hz_str}."
+    if not findings:
+        ai_summary = (
+            f"{hw_intro} Tuyệt vời! Toàn bộ cấu hình CPU, GPU, phân luồng game/app nền, RAM và rác hệ thống đều đang ở trạng thái tối ưu nhất (100/100 điểm)."
+        )
+    else:
+        high_n = sum(1 for f in findings if f["severity"] == "high")
+        med_n = sum(1 for f in findings if f["severity"] == "medium")
+        low_n = sum(1 for f in findings if f["severity"] == "low")
+        parts = []
+        if high_n:
+            parts.append(f"{high_n} điểm quan trọng")
+        if med_n:
+            parts.append(f"{med_n} điểm trung bình")
+        if low_n:
+            parts.append(f"{low_n} điểm nhẹ")
+        ai_summary = (
+            f"{hw_intro} AI phát hiện {len(findings)} điểm cần xử lý ({', '.join(parts)}). "
+            f"Bạn có thể giữ nguyên tích chọn và bấm \"Tối Ưu Ngay Các Điểm Tìm Ra\" để xử lý tự động."
+        )
+
+    return {
+        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "is_admin": tuning["is_admin"],
+        "hardware_profile": hw,
+        "display_hz": tuning["display_hz"],
+        "display_mux": display_mux,
+        "telemetry": telemetry,
+        "memory": mem,
+        "temp_junk_bytes": temp_scan["total_bytes"],
+        "temp_junk_formatted": temp_scan["total_formatted"],
+        "health_score": health_score,
+        "findings_count": len(findings),
+        "findings": findings,
+        "ai_summary": ai_summary,
+        "status": tuning,
+    }
+
+
+def apply_ai_recommendations(finding_ids: list = None) -> dict:
+    """Automatically apply selected (or all) AI-detected optimization findings."""
     _ensure_tuning_backup()
+    analysis = analyze_system_ai()
+    target_set = set(finding_ids) if finding_ids is not None else None
+    to_apply = [
+        f for f in analysis["findings"]
+        if target_set is None or f["id"] in target_set
+    ]
+
+    applied_titles = []
     errors = []
-    applied = 0
     requires_reboot = False
 
-    # Batch NVDRS settings into a single write+save transaction for speed & atomicity
-    nv_batch = {
-        0x1057EB71: 5,           # Power management: Normal (mát khi nghỉ, bung 100% khi chơi game)
-        0x10F9DC80: 1,           # Optimus flags: Prefer NVIDIA GPU for 3D games
-        0x10F9DC81: 1,           # Enable app for Optimus: Prefer NVIDIA GPU
-        0x10835002: None,        # Max Frame Rate: OFF (Không giới hạn FPS)
-        0x10835016: None,        # Background Max FPS: OFF (Không giới hạn)
-        0x007BA09E: None,        # Low Latency Mode: OFF (Giữ hàng đợi frame chuẩn, mát CPU)
-        0x00CE2691: 10,          # Texture filtering Quality: Performance
-        0x00E73211: 1,           # Anisotropic sample optimization: On
-        0x002ECAF2: 1,           # Trilinear optimization: On
-        0x0064B541: 1,           # Preferred refresh rate: Highest available (165Hz)
-        0x00A879CF: 1620202130,  # Vertical Sync: Use 3D application setting
-    }
-    try:
-        nv_ok, _ = _read_nvdrs_raw([0x1057EB71])
-        if nv_ok:
-            _write_nvdrs_updates(nv_batch)
-            applied += 9
-    except Exception as e:
-        errors.append(f"NVIDIA NVAPI: {e}")
-
-    non_nv_ids = [sid for sid in _OPTIMAL_PROFILE_MAP if not sid.startswith("nv_")]
-    for sid in non_nv_ids:
+    for f in to_apply:
+        fid = f["id"]
         try:
-            meta = _apply_setting_action(sid, _OPTIMAL_PROFILE_MAP[sid])
-            applied += 1
-            if meta.get("requires_reboot"):
-                requires_reboot = True
+            if fid.startswith("setting:"):
+                meta = _apply_setting_action(f["setting_id"], f["target_value"])
+                if meta.get("requires_reboot"):
+                    requires_reboot = True
+            elif fid.startswith("game_gpu:"):
+                _reg_write_str("gpu_pref", f["exe_path"], "GpuPreference=2;")
+            elif fid.startswith("offload:"):
+                _reg_write_str("gpu_pref", f["exe_path"], "GpuPreference=1;")
+            elif fid == "action:clean_memory":
+                clean_memory()
+            elif fid == "action:clean_user_temp":
+                clean_junk_category("user_temp", use_recycle_bin=False)
+            applied_titles.append(f["title"])
         except Exception as e:
-            errors.append(f"{sid}: {e}")
+            errors.append(f"{f['title']}: {e}")
 
-    try:
-        applied += _ensure_games_high_perf_gpu()
-    except Exception as e:
-        errors.append(f"game_gpu_pref: {e}")
-
-    for app in _discover_offload_apps():
-        try:
-            _reg_write_str("gpu_pref", app["path"], "GpuPreference=1;")
-            applied += 1
-        except Exception as e:
-            errors.append(f"{app['exe_name']}: {e}")
-
+    fresh_analysis = analyze_system_ai()
     need_adm = bool(errors) and not is_admin()
+    applied_count = len(applied_titles)
+
+    if applied_count == 0 and not errors:
+        msg = "Hệ thống đã đạt trạng thái tối ưu hoàn hảo, không có mục nào cần sửa."
+    elif not errors:
+        msg = f"AI đã tự động tối ưu xong {applied_count} điểm tìm ra!"
+    else:
+        msg = f"Đã tối ưu {applied_count} điểm. {len(errors)} mục hệ thống cần quyền Administrator."
+
     return {
-        "success": applied > 0 and (len(errors) == 0 or is_admin()),
-        "partial": applied > 0 and len(errors) > 0,
+        "success": (applied_count > 0 or not to_apply) and len(errors) == 0,
+        "partial": applied_count > 0 and len(errors) > 0,
         "need_admin": need_adm,
-        "applied_count": applied,
-        "errors": errors,
+        "applied_count": applied_count,
+        "applied_titles": applied_titles,
         "requires_reboot": requires_reboot,
-        "message": (
-            "Đã tối ưu toàn bộ GPU NVIDIA, CPU Power Plan & Windows mượt & mát!"
-            if not errors
-            else f"Đã áp dụng {applied} mục. Một số mục hệ thống cần quyền Administrator."
-        ),
-        "status": get_system_tuning_status(),
+        "errors": errors,
+        "message": msg,
+        "analysis": fresh_analysis,
+        "status": fresh_analysis["status"],
     }
 
 

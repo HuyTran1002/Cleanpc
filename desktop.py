@@ -585,6 +585,18 @@ class CleanPCApi:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def ai_analyze_tuning(self):
+        try:
+            return cleaner_core.analyze_system_ai()
+        except Exception as e:
+            return {"error": str(e)}
+
+    def ai_apply_tuning(self, finding_ids=None):
+        try:
+            return cleaner_core.apply_ai_recommendations(finding_ids)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def restore_tuning_defaults(self):
         try:
             return cleaner_core.restore_tuning_defaults()

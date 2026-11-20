@@ -326,7 +326,7 @@
           <div class="form-group filter-path-group">
             <label>Ổ đĩa hoặc Thư mục cần tìm</label>
             <div class="filter-input-row">
-              <input type="text" id="large-target-dir" class="form-input" value="D:\" placeholder="Ví dụ: D:\ hoặc C:\Users\HuyBlink\Downloads">
+              <input type="text" id="large-target-dir" class="form-input" value="C:\" placeholder="Ví dụ: C:\, D:\ hoặc %USERPROFILE%\Downloads">
               <button id="btn-browse-large-folder" type="button" class="btn btn-outline btn-browse" title="Chọn thư mục từ máy tính">
                 📁 Duyệt...
               </button>
@@ -600,9 +600,11 @@
             <button class="btn btn-secondary btn-sm" id="btn-tuning-restore" title="Khôi phục lại thiết lập ban đầu">
               <span>Khôi phục mặc định</span>
             </button>
-            <button class="btn btn-primary btn-sm" id="btn-tuning-optimize-all">
-              <svg style="width:15px;height:15px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-              <span>Tối Ưu Toàn Bộ (Mượt &amp; Mát)</span>
+            <button class="btn btn-ai btn-sm" id="btn-tuning-ai-scan" title="AI tự động quét phần cứng và tìm các điểm chưa tối ưu">
+              <span>🤖 AI Quét &amp; Phân Tích</span>
+            </button>
+            <button class="btn btn-primary btn-sm" id="btn-tuning-optimize-all" title="AI tự động phân tích cấu hình máy và tối ưu đúng các điểm tìm ra">
+              <span>⚡ Tối Ưu Các Điểm AI Tìm Ra</span>
             </button>
           </div>
         </div>
@@ -645,6 +647,38 @@
               <div class="tuning-metric-pill"><span>Đã tối ưu</span><strong id="tuning-score-pct">0%</strong></div>
               <div class="tuning-metric-pill"><span>Ép iGPU</span><strong id="tuning-offload-count">0 app</strong></div>
             </div>
+          </div>
+        </div>
+
+        <!-- AI Smart Diagnostic & Auto-Optimizer Card -->
+        <div id="ai-diagnostic-card" class="card ai-diagnostic-card" style="margin-bottom:14px;">
+          <div class="ai-diag-head">
+            <div style="min-width:0;flex:1;">
+              <div class="ai-diag-title-row">
+                <span class="ai-badge-chip">AI SMART ANALYZER</span>
+                <h4>Chẩn Đoán Phần Cứng &amp; Tự Động Tìm Điểm Nghẽn</h4>
+              </div>
+              <p id="ai-diagnostic-hw" class="ai-diag-hw">Đang nhận diện cấu hình phần cứng...</p>
+            </div>
+            <div class="ai-diag-score-box">
+              <span class="ai-diag-score-lbl">Điểm tối ưu AI</span>
+              <strong id="ai-diagnostic-score" class="ai-diag-score-val">--/100</strong>
+            </div>
+          </div>
+          <div id="ai-diagnostic-summary" class="ai-diag-summary">
+            Nhấn <strong>"AI Quét &amp; Phân Tích"</strong> để AI tự động kiểm tra CPU, GPU, phân luồng Game/iGPU, RAM và rác hệ thống.
+          </div>
+          <div id="ai-findings-list" class="ai-findings-list"></div>
+          <div id="ai-diagnostic-footer" class="ai-diag-footer" style="display:none;">
+            <div class="ai-diag-footer-left">
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-ai-select-all">Chọn tất cả</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-ai-deselect-all">Bỏ chọn</button>
+              <span id="ai-selected-count" class="ai-selected-count">0 mục đã chọn</span>
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-ai-apply-selected">
+              <svg style="width:15px;height:15px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              <span>⚡ Tối Ưu Ngay Các Điểm Tìm Ra</span>
+            </button>
           </div>
         </div>
 
@@ -746,6 +780,8 @@ window.onunhandledrejection = function(e) {
         else if (url === '/api/optimize/trim') result = await api.optimize_trim(body.drive);
         else if (url === '/api/tuning/status') result = await api.get_tuning_status();
         else if (url === '/api/tuning/telemetry') result = await api.get_tuning_telemetry();
+        else if (url === '/api/tuning/ai_analyze') result = await api.ai_analyze_tuning();
+        else if (url === '/api/tuning/ai_apply') result = await api.ai_apply_tuning(body?.finding_ids ?? null);
         else if (url === '/api/tuning/apply') result = await api.apply_tuning_setting(body.id, body.value);
         else if (url === '/api/tuning/toggle_app') result = await api.toggle_tuning_app(body.path, body.enabled);
         else if (url === '/api/tuning/optimize_all') result = await api.optimize_all_tuning();
@@ -769,6 +805,6 @@ window.onunhandledrejection = function(e) {
   };
 })();
 </script>
-<script src="app.js?v=8"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>

@@ -115,6 +115,8 @@ class CleanPCHandler(SimpleHTTPRequestHandler):
             self._send_json(cleaner_core.get_system_tuning_status())
         elif path == "/api/tuning/telemetry":
             self._send_json(cleaner_core.get_tuning_telemetry())
+        elif path == "/api/tuning/ai_analyze":
+            self._send_json(cleaner_core.analyze_system_ai())
         elif path.startswith("/api/"):
             self._send_json({"error": "Endpoint not found"}, 404)
         else:
@@ -306,6 +308,12 @@ class CleanPCHandler(SimpleHTTPRequestHandler):
             self._send_json(res)
         elif path == "/api/tuning/optimize_all":
             res = cleaner_core.apply_optimal_tuning_profile()
+            self._send_json(res)
+        elif path == "/api/tuning/ai_analyze":
+            res = cleaner_core.analyze_system_ai()
+            self._send_json(res)
+        elif path == "/api/tuning/ai_apply":
+            res = cleaner_core.apply_ai_recommendations(body.get("finding_ids"))
             self._send_json(res)
         elif path == "/api/tuning/restore":
             res = cleaner_core.restore_tuning_defaults()
